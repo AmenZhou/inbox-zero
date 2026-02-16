@@ -79,6 +79,37 @@ examples:
       }
     output: "Client-side environment variable properly added"
 
+## Common `.env` Pitfalls
+
+### 1. Never use shell command substitution for secret values
+
+The `.env.example` uses `$(openssl rand -hex 32)` as a hint for how to generate values. **Do NOT copy this syntax literally into `.env`** — it generates a new random value on every server restart, which:
+- Invalidates all user sessions (`AUTH_SECRET`)
+- Corrupts encrypted data like OAuth tokens (`EMAIL_ENCRYPT_SECRET`, `EMAIL_ENCRYPT_SALT`)
+- Breaks API key validation (`INTERNAL_API_KEY`, `API_KEY_SALT`)
+
+**Wrong:**
+```bash
+AUTH_SECRET=$(openssl rand -hex 32)
+```
+
+**Correct:**
+```bash
+# Run once in terminal: openssl rand -hex 32
+# Paste the static output:
+AUTH_SECRET=abc123...your-fixed-value
+```
+
+This applies to: `AUTH_SECRET`, `EMAIL_ENCRYPT_SECRET`, `EMAIL_ENCRYPT_SALT`, `INTERNAL_API_KEY`, `API_KEY_SALT`, `CRON_SECRET`.
+
+### 2. `NEXT_PUBLIC_BASE_URL` must match your access domain
+
+The auth system uses this as `baseURL` and `trustedOrigins`. If you access the app via `https://webhook.example.com` but this is set to `http://localhost:3000`, OAuth sign-in will fail silently.
+
+### 3. Restart dev server after changing `NEXT_PUBLIC_*` variables
+
+`NEXT_PUBLIC_*` variables are baked in at build time. Changes require restarting `pnpm dev`.
+
 references:
   - apps/web/env.ts
   - apps/web/.env.example

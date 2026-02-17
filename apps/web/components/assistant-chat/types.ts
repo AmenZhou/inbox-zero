@@ -6,7 +6,10 @@ import type {
   GetLearnedPatternsTool,
   GetUserRulesAndSettingsTool,
   ManageInboxTool,
+  ReadEmailTool,
   SearchInboxTool,
+  SaveMemoryTool,
+  SearchMemoriesTool,
   SendEmailTool,
   UpdateInboxFeaturesTool,
   UpdateAboutTool,
@@ -24,6 +27,7 @@ import type {
 export type ChatTools = {
   getAccountOverview: GetAccountOverviewTool;
   searchInbox: SearchInboxTool;
+  readEmail: ReadEmailTool;
   manageInbox: ManageInboxTool;
   updateInboxFeatures: UpdateInboxFeaturesTool;
   getUserRulesAndSettings: GetUserRulesAndSettingsTool;
@@ -34,6 +38,8 @@ export type ChatTools = {
   updateLearnedPatterns: UpdateLearnedPatternsTool;
   updateAbout: UpdateAboutTool;
   addToKnowledgeBase: AddToKnowledgeBaseTool;
+  saveMemory: SaveMemoryTool;
+  searchMemories: SearchMemoriesTool;
   sendEmail: SendEmailTool;
 };
 

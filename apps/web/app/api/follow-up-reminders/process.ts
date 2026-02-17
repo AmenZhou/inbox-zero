@@ -18,6 +18,7 @@ import {
 } from "@/utils/reply-tracker/label-helpers";
 import { getRuleLabel } from "@/utils/rule/consts";
 import { internalDateToDate } from "@/utils/date";
+import { isDuplicateError } from "@/utils/prisma-helpers";
 
 export async function processAllFollowUpReminders(logger: Logger) {
   logger.info("Processing follow-up reminders for all users");
@@ -228,15 +229,20 @@ async function processFollowUpsForType({
       ? ThreadTrackerType.AWAITING
       : ThreadTrackerType.NEEDS_REPLY;
 
-  // Batch-check which threads already have follow-up applied.
+  // Batch-check which threads already have follow-up applied or a draft created.
   // This avoids N individual DB queries and N Gmail API calls for already-processed threads.
+  // Both conditions require resolved=false so that resolved threads (e.g. after a reply)
+  // can re-enter the follow-up flow.
   const threadIds = threads.map((t) => t.id);
   const existingTrackers = await prisma.threadTracker.findMany({
     where: {
       emailAccountId: emailAccount.id,
       threadId: { in: threadIds },
       resolved: false,
-      followUpAppliedAt: { not: null },
+      OR: [
+        { followUpAppliedAt: { not: null } },
+        { followUpDraftId: { not: null } },
+      ],
     },
     select: { threadId: true },
   });
@@ -244,6 +250,13 @@ async function processFollowUpsForType({
 
   let processedCount = 0;
   let skippedCount = 0;
+
+  if (alreadyProcessedIds.size > 0) {
+    logger.info("Skipping already-processed threads", {
+      systemType,
+      skippedThreadIds: [...alreadyProcessedIds],
+    });
+  }
 
   for (const thread of threads) {
     if (alreadyProcessedIds.has(thread.id)) {
@@ -268,26 +281,82 @@ async function processFollowUpsForType({
         logger: threadLogger,
       });
 
-      const tracker = await prisma.threadTracker.upsert({
+      const existingTracker = await prisma.threadTracker.findFirst({
         where: {
-          emailAccountId_threadId_messageId: {
-            emailAccountId: emailAccount.id,
-            threadId: thread.id,
-            messageId: lastMessage.id,
-          },
-        },
-        update: {
-          followUpAppliedAt: now,
-        },
-        create: {
           emailAccountId: emailAccount.id,
           threadId: thread.id,
-          messageId: lastMessage.id,
           type: trackerType,
-          sentAt: messageDate,
-          followUpAppliedAt: now,
+          resolved: false,
         },
+        orderBy: { createdAt: "desc" },
       });
+
+      let tracker;
+      if (existingTracker) {
+        try {
+          tracker = await prisma.threadTracker.update({
+            where: { id: existingTracker.id },
+            data: {
+              messageId: lastMessage.id,
+              sentAt: messageDate,
+              followUpAppliedAt: now,
+            },
+          });
+        } catch (error) {
+          if (isDuplicateError(error)) {
+            tracker = await prisma.threadTracker.update({
+              where: {
+                emailAccountId_threadId_messageId: {
+                  emailAccountId: emailAccount.id,
+                  threadId: thread.id,
+                  messageId: lastMessage.id,
+                },
+              },
+              data: {
+                resolved: false,
+                type: trackerType,
+                sentAt: messageDate,
+                followUpAppliedAt: now,
+              },
+            });
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        try {
+          tracker = await prisma.threadTracker.create({
+            data: {
+              emailAccountId: emailAccount.id,
+              threadId: thread.id,
+              messageId: lastMessage.id,
+              type: trackerType,
+              sentAt: messageDate,
+              followUpAppliedAt: now,
+            },
+          });
+        } catch (error) {
+          if (isDuplicateError(error)) {
+            tracker = await prisma.threadTracker.update({
+              where: {
+                emailAccountId_threadId_messageId: {
+                  emailAccountId: emailAccount.id,
+                  threadId: thread.id,
+                  messageId: lastMessage.id,
+                },
+              },
+              data: {
+                resolved: false,
+                type: trackerType,
+                sentAt: messageDate,
+                followUpAppliedAt: now,
+              },
+            });
+          } else {
+            throw error;
+          }
+        }
+      }
 
       let draftCreated = false;
       if (generateDraft) {

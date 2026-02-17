@@ -7,7 +7,7 @@ vi.mock("server-only", () => ({}));
 
 const {
   envState,
-  mockChatCompletionStream,
+  mockToolCallAgentStream,
   mockCreateEmailProvider,
   mockPosthogCaptureEvent,
   mockPrisma,
@@ -15,7 +15,7 @@ const {
   envState: {
     sendEmailEnabled: true,
   },
-  mockChatCompletionStream: vi.fn(),
+  mockToolCallAgentStream: vi.fn(),
   mockCreateEmailProvider: vi.fn(),
   mockPosthogCaptureEvent: vi.fn(),
   mockPrisma: {
@@ -29,11 +29,16 @@ const {
     knowledge: {
       create: vi.fn(),
     },
+    chatMemory: {
+      create: vi.fn(),
+      findFirst: vi.fn().mockResolvedValue(null),
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
 vi.mock("@/utils/llms", () => ({
-  chatCompletionStream: mockChatCompletionStream,
+  toolCallAgentStream: mockToolCallAgentStream,
 }));
 
 vi.mock("@/utils/email/provider", () => ({
@@ -81,7 +86,7 @@ async function captureToolSet(
   const user = getEmailAccount();
   user.account.provider = provider;
 
-  mockChatCompletionStream.mockResolvedValue({
+  mockToolCallAgentStream.mockResolvedValue({
     toUIMessageStreamResponse: vi.fn(),
   });
 
@@ -92,7 +97,7 @@ async function captureToolSet(
     logger,
   });
 
-  return mockChatCompletionStream.mock.calls[0][0].tools;
+  return mockToolCallAgentStream.mock.calls[0][0].tools;
 }
 
 describe("aiProcessAssistantChat", () => {
@@ -106,7 +111,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
 
@@ -117,7 +122,7 @@ describe("aiProcessAssistantChat", () => {
       logger,
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
 
     expect(args.messages[0].role).toBe("system");
     expect(args.messages[0].content).toContain("Core responsibilities:");
@@ -132,6 +137,7 @@ describe("aiProcessAssistantChat", () => {
 
     expect(args.tools.getAccountOverview).toBeDefined();
     expect(args.tools.searchInbox).toBeDefined();
+    expect(args.tools.readEmail).toBeDefined();
     expect(args.tools.manageInbox).toBeDefined();
     expect(args.tools.updateInboxFeatures).toBeDefined();
     expect(args.tools.sendEmail).toBeDefined();
@@ -142,7 +148,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: false,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
 
@@ -153,7 +159,7 @@ describe("aiProcessAssistantChat", () => {
       logger,
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     expect(args.tools.sendEmail).toBeUndefined();
   });
 
@@ -162,7 +168,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
 
@@ -201,7 +207,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -218,7 +224,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
 
@@ -259,7 +265,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -277,7 +283,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
 
@@ -316,7 +322,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -333,7 +339,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
     mockPrisma.rule.findUnique.mockResolvedValue({
@@ -378,7 +384,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -399,7 +405,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
     mockPrisma.rule.findUnique.mockRejectedValue(new Error("DB unavailable"));
@@ -441,7 +447,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -458,7 +464,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
     mockPrisma.rule.findUnique.mockResolvedValue({
@@ -501,7 +507,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -527,7 +533,7 @@ describe("aiProcessAssistantChat", () => {
       emailSend: true,
     });
 
-    mockChatCompletionStream.mockResolvedValue({
+    mockToolCallAgentStream.mockResolvedValue({
       toUIMessageStreamResponse: vi.fn(),
     });
     mockPrisma.rule.findUnique.mockResolvedValue({
@@ -572,7 +578,7 @@ describe("aiProcessAssistantChat", () => {
       },
     });
 
-    const args = mockChatCompletionStream.mock.calls[0][0];
+    const args = mockToolCallAgentStream.mock.calls[0][0];
     const hiddenContext = args.messages.find(
       (message: { role: string; content: string }) =>
         message.role === "system" &&
@@ -766,6 +772,170 @@ describe("aiProcessAssistantChat", () => {
     });
 
     expect(result.totalReturned).toBe(0);
+  });
+
+  it("registers saveMemory tool", async () => {
+    const tools = await captureToolSet();
+    expect(tools.saveMemory).toBeDefined();
+  });
+
+  it("saveMemory creates a new memory", async () => {
+    const tools = await captureToolSet();
+    mockPrisma.chatMemory.findFirst.mockResolvedValue(null);
+
+    const result = await tools.saveMemory.execute({
+      content: "User prefers concise responses",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.content).toBe("User prefers concise responses");
+    expect(result.deduplicated).toBeUndefined();
+    expect(mockPrisma.chatMemory.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        content: "User prefers concise responses",
+        emailAccountId: "email-account-id",
+      }),
+    });
+  });
+
+  it("saveMemory deduplicates when identical memory exists", async () => {
+    const tools = await captureToolSet();
+    mockPrisma.chatMemory.findFirst.mockResolvedValue({ id: "existing-id" });
+
+    const result = await tools.saveMemory.execute({
+      content: "User prefers concise responses",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.deduplicated).toBe(true);
+    expect(mockPrisma.chatMemory.create).not.toHaveBeenCalled();
+  });
+
+  it("injects memories into model messages when provided", async () => {
+    const { aiProcessAssistantChat } = await loadAssistantChatModule({
+      emailSend: true,
+    });
+
+    mockToolCallAgentStream.mockResolvedValue({
+      toUIMessageStreamResponse: vi.fn(),
+    });
+
+    await aiProcessAssistantChat({
+      messages: baseMessages,
+      emailAccountId: "email-account-id",
+      user: getEmailAccount(),
+      logger,
+      memories: [
+        { content: "User likes dark mode", date: "2026-02-10" },
+        { content: "Prefers batch archive", date: "2026-02-12" },
+      ],
+    });
+
+    const args = mockToolCallAgentStream.mock.calls[0][0];
+    const memoriesMessage = args.messages.find(
+      (m: { role: string; content: string }) =>
+        m.role === "system" &&
+        m.content.includes("Memories from previous conversations"),
+    );
+
+    expect(memoriesMessage).toBeDefined();
+    expect(memoriesMessage.content).toContain(
+      "[2026-02-10] User likes dark mode",
+    );
+    expect(memoriesMessage.content).toContain(
+      "[2026-02-12] Prefers batch archive",
+    );
+  });
+
+  it("does not inject memories message when memories are empty", async () => {
+    const { aiProcessAssistantChat } = await loadAssistantChatModule({
+      emailSend: true,
+    });
+
+    mockToolCallAgentStream.mockResolvedValue({
+      toUIMessageStreamResponse: vi.fn(),
+    });
+
+    await aiProcessAssistantChat({
+      messages: baseMessages,
+      emailAccountId: "email-account-id",
+      user: getEmailAccount(),
+      logger,
+      memories: [],
+    });
+
+    const args = mockToolCallAgentStream.mock.calls[0][0];
+    const memoriesMessage = args.messages.find(
+      (m: { role: string; content: string }) =>
+        m.role === "system" &&
+        m.content.includes("Memories from previous conversations"),
+    );
+
+    expect(memoriesMessage).toBeUndefined();
+  });
+
+  it("updateAbout in replace mode overwrites existing content", async () => {
+    const tools = await captureToolSet();
+
+    mockPrisma.emailAccount.findUnique.mockResolvedValue({
+      about: "Old instructions",
+    });
+    mockPrisma.emailAccount.update.mockResolvedValue({});
+
+    const result = await tools.updateAbout.execute({
+      about: "New instructions",
+      mode: "replace",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.updatedAbout).toBe("New instructions");
+    expect(mockPrisma.emailAccount.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { about: "New instructions" },
+      }),
+    );
+  });
+
+  it("updateAbout in append mode preserves existing content", async () => {
+    const tools = await captureToolSet();
+
+    mockPrisma.emailAccount.findUnique.mockResolvedValue({
+      about: "Existing instructions",
+    });
+    mockPrisma.emailAccount.update.mockResolvedValue({});
+
+    const result = await tools.updateAbout.execute({
+      about: "Additional preference",
+      mode: "append",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.updatedAbout).toBe(
+      "Existing instructions\nAdditional preference",
+    );
+    expect(result.previousAbout).toBe("Existing instructions");
+    expect(mockPrisma.emailAccount.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { about: "Existing instructions\nAdditional preference" },
+      }),
+    );
+  });
+
+  it("updateAbout in append mode with no existing about sets new content", async () => {
+    const tools = await captureToolSet();
+
+    mockPrisma.emailAccount.findUnique.mockResolvedValue({
+      about: null,
+    });
+    mockPrisma.emailAccount.update.mockResolvedValue({});
+
+    const result = await tools.updateAbout.execute({
+      about: "First instructions",
+      mode: "append",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.updatedAbout).toBe("First instructions");
   });
 
   it("executes searchInbox and manageInbox tools with resilient behavior", async () => {

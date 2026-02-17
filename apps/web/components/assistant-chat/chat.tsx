@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import {
   ArrowUpIcon,
   HistoryIcon,
-  LightbulbIcon,
   Loader2,
   PlusIcon,
   SquareIcon,
@@ -32,8 +31,6 @@ import { useSession } from "@/utils/auth-client";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { ChatMessage } from "@/components/assistant-chat/types";
 import type { MessageContext } from "@/app/api/chat/validation";
-
-const MAX_MESSAGES = 20;
 
 export function Chat({ open }: { open: boolean }) {
   const {
@@ -151,7 +148,13 @@ export function Chat({ open }: { open: boolean }) {
         <NewChatView
           firstName={firstName}
           inputArea={inputArea}
-          setInput={setInput}
+          onSuggestionClick={(text) => {
+            chat.sendMessage({
+              role: "user",
+              parts: [{ type: "text", text }],
+            });
+            setLocalStorageInput("");
+          }}
         />
       )}
     </div>
@@ -214,14 +217,20 @@ function ChatMessagesView({
   );
 }
 
+const CHAT_EXAMPLES = [
+  "Help me handle my inbox today",
+  "Clean up my inbox",
+  "Auto-archive newsletters for me",
+];
+
 function NewChatView({
   firstName,
   inputArea,
-  setInput,
+  onSuggestionClick,
 }: {
   firstName: string | undefined;
   inputArea: React.ReactNode;
-  setInput: (input: string) => void;
+  onSuggestionClick: (text: string) => void;
 }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center px-[var(--chat-px)]">
@@ -230,13 +239,18 @@ function NewChatView({
           {getGreeting(firstName)}
         </h1>
         {inputArea}
-        <div className="mt-4 flex justify-center">
-          <ExamplesDialog setInput={setInput}>
-            <Button variant="outline" className="gap-2 rounded-full">
-              <LightbulbIcon className="size-4" />
-              Choose from examples
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
+          {CHAT_EXAMPLES.map((example) => (
+            <Button
+              key={example}
+              variant="outline"
+              size="sm"
+              className="rounded-full"
+              onClick={() => onSuggestionClick(example)}
+            >
+              {example}
             </Button>
-          </ExamplesDialog>
+          ))}
         </div>
       </div>
     </div>
@@ -254,13 +268,6 @@ function ChatTopBar({
 }) {
   return (
     <div className="relative mx-auto w-full max-w-[calc(var(--chat-max-w)+var(--chat-px)*2)] px-[var(--chat-px)] pt-2">
-      {messages.length > MAX_MESSAGES ? (
-        <div className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
-          <div className="w-fit rounded-md border border-red-200 bg-red-100 p-2 text-sm text-red-800">
-            The chat is too long. Please start a new conversation.
-          </div>
-        </div>
-      ) : null}
       <div className="flex items-center justify-end gap-1">
         {hasMessages ? (
           <>

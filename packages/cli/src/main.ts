@@ -136,7 +136,7 @@ async function main() {
     .description(
       "CLI tool for self-hosting Inbox Zero — AI email assistant.\n\n" +
         "Quick start:\n" +
-        "  inbox-zero setup      Configure Google OAuth, AI provider, and Docker\n" +
+        "  inbox-zero setup      Configure OAuth providers, AI provider, and Docker\n" +
         "  inbox-zero start      Start Inbox Zero\n" +
         "  inbox-zero config     View and update settings\n\n" +
         "Docs: https://docs.getinboxzero.com/self-hosting",
@@ -320,48 +320,150 @@ async function runSetupQuick(options: { name?: string }) {
 
   requireDocker();
 
-  // ── Step 1: Google OAuth ──
-
-  const callbackUrl = "http://localhost:3000/api/auth/callback/google";
-  const linkingCallbackUrl =
-    "http://localhost:3000/api/google/linking/callback";
-
   p.note(
-    "You need a Google OAuth app to connect your Gmail.\n\n" +
-      "1. Open: https://console.cloud.google.com/apis/credentials\n" +
-      `2. Click "Create Credentials" → "OAuth client ID"\n` +
-      `3. Select "Web application"\n` +
-      `4. Under "Authorized redirect URIs" add:\n` +
-      `   ${callbackUrl}\n` +
-      `   ${linkingCallbackUrl}\n` +
-      "5. Copy the Client ID and Client Secret\n\n" +
-      "Full guide: https://docs.getinboxzero.com/self-hosting/google-oauth",
-    "Step 1 of 4: Google OAuth",
+    "Choose the email provider(s) you want to enable now.\n" +
+      "You can add or change providers later with: inbox-zero config",
+    "Step 1: OAuth Providers",
   );
 
-  const googleClientId = await p.text({
-    message: "Google Client ID",
-    placeholder: "paste your Client ID here",
+  const oauthProviders = await p.multiselect({
+    message: "Which OAuth providers do you want to configure?",
+    options: [
+      { value: "google", label: "Google (Gmail)" },
+      { value: "microsoft", label: "Microsoft (Outlook)" },
+    ],
+    required: true,
   });
-  if (p.isCancel(googleClientId)) {
+
+  if (p.isCancel(oauthProviders)) {
     p.cancel("Setup cancelled.");
     process.exit(0);
   }
 
-  const googleClientSecret = await p.text({
-    message: "Google Client Secret",
-    placeholder: "paste your Client Secret here",
-  });
-  if (p.isCancel(googleClientSecret)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
+  const wantsGoogle = oauthProviders.includes("google");
+  const wantsMicrosoft = oauthProviders.includes("microsoft");
+
+  let googleClientId = "";
+  let googleClientSecret = "";
+  if (wantsGoogle) {
+    const callbackUrl = "http://localhost:3000/api/auth/callback/google";
+    const linkingCallbackUrl =
+      "http://localhost:3000/api/google/linking/callback";
+
+    p.note(
+      "You need a Google OAuth app to connect your Gmail.\n\n" +
+        "First, set up the OAuth consent screen:\n" +
+        "1. Open: https://console.cloud.google.com/apis/credentials/consent\n" +
+        "2. User type:\n" +
+        '   - "Internal" — Google Workspace only, all org members can sign in\n' +
+        '   - "External" — works with any Google account (including personal Gmail)\n' +
+        "     You'll need to add yourself as a test user (step 5)\n" +
+        "3. Fill in the app name and your email\n" +
+        '4. Click "Save and Continue" through the scopes section\n' +
+        "5. If External: add your email as a test user\n" +
+        "6. Complete the wizard\n\n" +
+        "Then, create OAuth credentials:\n" +
+        "7. Open: https://console.cloud.google.com/apis/credentials\n" +
+        `8. Click "Create Credentials" → "OAuth client ID"\n` +
+        `9. Select "Web application"\n` +
+        `10. Under "Authorized redirect URIs" add:\n` +
+        `    ${callbackUrl}\n` +
+        `    ${linkingCallbackUrl}\n` +
+        "11. Copy the Client ID and Client Secret\n\n" +
+        "If External: you'll see a \"This app isn't verified\" warning when\n" +
+        'signing in. Click "Advanced" then "Go to [app name]" to proceed.\n\n' +
+        "Full guide: https://docs.getinboxzero.com/hosting/setup-guides",
+      "Google OAuth",
+    );
+
+    const googleClientIdResult = await p.text({
+      message: "Google Client ID",
+      placeholder: "paste your Client ID here",
+    });
+    if (p.isCancel(googleClientIdResult)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+    googleClientId = googleClientIdResult;
+
+    const googleClientSecretResult = await p.text({
+      message: "Google Client Secret",
+      placeholder: "paste your Client Secret here",
+    });
+    if (p.isCancel(googleClientSecretResult)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+    googleClientSecret = googleClientSecretResult;
   }
 
-  // ── Step 2: LLM Provider ──
+  let microsoftClientId = "";
+  let microsoftClientSecret = "";
+  let microsoftTenantId = "common";
+  if (wantsMicrosoft) {
+    const microsoftCallbackUrl =
+      "http://localhost:3000/api/auth/callback/microsoft";
+    const microsoftLinkingCallbackUrl =
+      "http://localhost:3000/api/outlook/linking/callback";
+    const microsoftCalendarCallbackUrl =
+      "http://localhost:3000/api/outlook/calendar/callback";
+
+    p.note(
+      "You need a Microsoft app registration to connect Outlook.\n\n" +
+        "1. Open: https://portal.azure.com/\n" +
+        "2. Go to App registrations → New registration\n" +
+        '3. Set account type to "Accounts in any organizational directory and personal Microsoft accounts"\n' +
+        "4. Add redirect URIs:\n" +
+        `   ${microsoftCallbackUrl}\n` +
+        `   ${microsoftLinkingCallbackUrl}\n` +
+        `   ${microsoftCalendarCallbackUrl}\n` +
+        "5. Go to Certificates & secrets → New client secret\n" +
+        "6. Copy Application (client) ID and secret value\n\n" +
+        'Tenant ID tip: use "common" for most setups.\n' +
+        "Use a specific tenant ID only if your organization requires\n" +
+        "single-tenant sign-in.\n\n" +
+        "Full guide: https://docs.getinboxzero.com/hosting/setup-guides#microsoft-oauth-setup",
+      "Microsoft OAuth",
+    );
+
+    const microsoftOAuth = await p.group(
+      {
+        clientId: () =>
+          p.text({
+            message: "Microsoft Client ID",
+            placeholder: "paste your Client ID here",
+          }),
+        clientSecret: () =>
+          p.text({
+            message: "Microsoft Client Secret",
+            placeholder: "paste your Client Secret here",
+          }),
+        tenantId: () =>
+          p.text({
+            message:
+              'Microsoft Tenant ID (default: "common"; use specific tenant for single-tenant orgs)',
+            placeholder: "common",
+            initialValue: "common",
+          }),
+      },
+      {
+        onCancel: () => {
+          p.cancel("Setup cancelled.");
+          process.exit(0);
+        },
+      },
+    );
+
+    microsoftClientId = microsoftOAuth.clientId || "";
+    microsoftClientSecret = microsoftOAuth.clientSecret || "";
+    microsoftTenantId = microsoftOAuth.tenantId || "common";
+  }
+
+  // ── AI Provider ──
 
   p.note(
     "Choose which AI service will process your emails.",
-    "Step 2 of 4: AI Provider",
+    "AI Provider",
   );
 
   const llmProvider = await p.select({
@@ -374,79 +476,47 @@ async function runSetupQuick(options: { name?: string }) {
   const llmEnv: EnvConfig = { DEFAULT_LLM_PROVIDER: llmProvider };
   await promptLlmCredentials(llmProvider, llmEnv);
 
-  // ── Step 3: Google Pub/Sub ──
+  // Generate token early so we can show it in the instructions
+  const pubsubVerificationToken = generateSecret(32);
+  let pubsubTopic = "";
 
-  p.note(
-    "Google Pub/Sub enables real-time email notifications.\n\n" +
-      "1. Go to: https://console.cloud.google.com/cloudpubsub/topic/list\n" +
-      '2. Create a topic (e.g., "inbox-zero-emails")\n' +
-      "3. Add gmail-api-push@system.gserviceaccount.com as a Publisher\n" +
-      "4. Create a push subscription pointing to your webhook URL:\n" +
-      "   https://yourdomain.com/api/google/webhook\n\n" +
-      "Your webhook must be publicly accessible.\n" +
-      "For local development, use ngrok or a similar tunnel.\n\n" +
-      "Press Enter to skip — configure later with: inbox-zero config",
-    "Step 3 of 4: Google Pub/Sub (optional)",
-  );
+  if (wantsGoogle) {
+    p.note(
+      "Google Pub/Sub enables real-time email notifications.\n\n" +
+        "1. Go to: https://console.cloud.google.com/cloudpubsub/topic/list\n" +
+        '2. Create a topic (e.g., "inbox-zero-emails")\n' +
+        "3. Grant Gmail publish access to your topic:\n" +
+        "   - Add principal: gmail-api-push@system.gserviceaccount.com\n" +
+        '   - Role: "Pub/Sub Publisher"\n' +
+        "4. Create a push subscription using this endpoint:\n" +
+        `   https://yourdomain.com/api/google/webhook?token=${pubsubVerificationToken}\n` +
+        "5. Paste the topic name below (or press Enter to skip for now)\n\n" +
+        "Full guide: https://docs.getinboxzero.com/hosting/setup-guides#google-pubsub-setup",
+      "Google Pub/Sub (optional)",
+    );
 
-  const pubsubTopic = await p.text({
-    message: "Google Pub/Sub Topic Name",
-    placeholder: "projects/your-project-id/topics/inbox-zero-emails",
-    validate: (v) => {
-      if (!v) return undefined;
-      if (!v.startsWith("projects/") || !v.includes("/topics/")) {
-        return "Topic name must be in format: projects/PROJECT_ID/topics/TOPIC_NAME";
-      }
-      return undefined;
-    },
-  });
+    const pubsubTopicResult = await p.text({
+      message: "Google Pub/Sub Topic Name",
+      placeholder: "projects/your-project-id/topics/inbox-zero-emails",
+      validate: (v) => {
+        if (!v) return undefined;
+        if (!v.startsWith("projects/") || !v.includes("/topics/")) {
+          return "Topic name must be in format: projects/PROJECT_ID/topics/TOPIC_NAME";
+        }
+        return undefined;
+      },
+    });
 
-  if (p.isCancel(pubsubTopic)) {
-    p.cancel("Setup cancelled.");
-    process.exit(0);
+    if (p.isCancel(pubsubTopicResult)) {
+      p.cancel("Setup cancelled.");
+      process.exit(0);
+    }
+    pubsubTopic = pubsubTopicResult;
   }
 
   // ── Generate config ──
 
-  const spinner = p.spinner();
-  spinner.start("Generating configuration...");
-
-  const redisToken = generateSecret(32);
-  const env: EnvConfig = {
-    NODE_ENV: "production",
-    // Database (Docker internal networking)
-    POSTGRES_USER: "postgres",
-    POSTGRES_PASSWORD: generateSecret(16),
-    POSTGRES_DB: "inboxzero",
-    DATABASE_URL: `postgresql://postgres:${generateSecret(16)}@db:5432/inboxzero`,
-    UPSTASH_REDIS_TOKEN: redisToken,
-    UPSTASH_REDIS_URL: "http://serverless-redis-http:80",
-    INTERNAL_API_URL: "http://web:3000",
-    // Secrets
-    AUTH_SECRET: generateSecret(32),
-    EMAIL_ENCRYPT_SECRET: generateSecret(32),
-    EMAIL_ENCRYPT_SALT: generateSecret(16),
-    INTERNAL_API_KEY: generateSecret(32),
-    API_KEY_SALT: generateSecret(32),
-    CRON_SECRET: generateSecret(32),
-    GOOGLE_PUBSUB_VERIFICATION_TOKEN: generateSecret(32),
-    // Google OAuth
-    GOOGLE_CLIENT_ID: googleClientId || "your-google-client-id",
-    GOOGLE_CLIENT_SECRET: googleClientSecret || "your-google-client-secret",
-    GOOGLE_PUBSUB_TOPIC_NAME:
-      pubsubTopic || "projects/your-project-id/topics/inbox-zero-emails",
-    // LLM
-    ...llmEnv,
-    // App
-    NEXT_PUBLIC_BASE_URL: "http://localhost:3000",
-    NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS: "true",
-  };
-
-  // Fix DATABASE_URL to use the actual password
-  env.DATABASE_URL = `postgresql://${env.POSTGRES_USER}:${env.POSTGRES_PASSWORD}@db:5432/${env.POSTGRES_DB}`;
-  env.DIRECT_URL = env.DATABASE_URL;
-
-  // Determine file paths
+  // Determine file paths first so we can read existing config
   const configDir = REPO_ROOT ?? STANDALONE_CONFIG_DIR;
   const envFileName = configName ? `.env.${configName}` : ".env";
   const envFile = REPO_ROOT
@@ -460,7 +530,6 @@ async function runSetupQuick(options: { name?: string }) {
 
   // Check if already configured
   if (existsSync(envFile)) {
-    spinner.stop("Paused");
     const overwrite = await p.confirm({
       message: "Existing configuration found. Overwrite it?",
       initialValue: false,
@@ -469,8 +538,62 @@ async function runSetupQuick(options: { name?: string }) {
       p.cancel("Setup cancelled. Existing configuration preserved.");
       process.exit(0);
     }
-    spinner.start("Generating configuration...");
   }
+
+  const spinner = p.spinner();
+  spinner.start("Generating configuration...");
+
+  // Reuse existing database password to avoid mismatch with Docker volume
+  const existingDbPassword = readExistingDbPassword(envFile);
+
+  const redisToken = generateSecret(32);
+  const dbPassword = existingDbPassword || generateSecret(16);
+  const env: EnvConfig = {
+    NODE_ENV: "production",
+    // Database (Docker internal networking)
+    POSTGRES_USER: "postgres",
+    POSTGRES_PASSWORD: dbPassword,
+    POSTGRES_DB: "inboxzero",
+    DATABASE_URL: `postgresql://postgres:${dbPassword}@db:5432/inboxzero`,
+    UPSTASH_REDIS_TOKEN: redisToken,
+    UPSTASH_REDIS_URL: "http://serverless-redis-http:80",
+    INTERNAL_API_URL: "http://web:3000",
+    // Secrets
+    AUTH_SECRET: generateSecret(32),
+    EMAIL_ENCRYPT_SECRET: generateSecret(32),
+    EMAIL_ENCRYPT_SALT: generateSecret(16),
+    INTERNAL_API_KEY: generateSecret(32),
+    API_KEY_SALT: generateSecret(32),
+    CRON_SECRET: generateSecret(32),
+    GOOGLE_PUBSUB_VERIFICATION_TOKEN: pubsubVerificationToken,
+    // Google OAuth
+    GOOGLE_CLIENT_ID: wantsGoogle
+      ? googleClientId || "your-google-client-id"
+      : "skipped",
+    GOOGLE_CLIENT_SECRET: wantsGoogle
+      ? googleClientSecret || "your-google-client-secret"
+      : "skipped",
+    GOOGLE_PUBSUB_TOPIC_NAME:
+      pubsubTopic || "projects/your-project-id/topics/inbox-zero-emails",
+    // Microsoft OAuth
+    MICROSOFT_CLIENT_ID: wantsMicrosoft
+      ? microsoftClientId || "your-microsoft-client-id"
+      : undefined,
+    MICROSOFT_CLIENT_SECRET: wantsMicrosoft
+      ? microsoftClientSecret || "your-microsoft-client-secret"
+      : undefined,
+    MICROSOFT_TENANT_ID: wantsMicrosoft ? microsoftTenantId : undefined,
+    MICROSOFT_WEBHOOK_CLIENT_STATE: wantsMicrosoft
+      ? generateSecret(32)
+      : undefined,
+    // LLM
+    ...llmEnv,
+    // App
+    NEXT_PUBLIC_BASE_URL: "http://localhost:3000",
+    NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS: "true",
+  };
+
+  env.DIRECT_URL = env.DATABASE_URL;
 
   // Fetch docker-compose.yml if not in the repo
   if (!REPO_ROOT) {
@@ -642,18 +765,24 @@ async function runSetupAdvanced(options: { name?: string }) {
   const isDevMode = envMode === "development";
 
   // Ask about infrastructure
+  p.note(
+    "Recommended for first-time self-hosting: use Docker Compose for Postgres/Redis.\n" +
+      "Then run everything in Docker unless you plan to run the web app from this repo with pnpm.",
+    "Infrastructure Recommendation",
+  );
+
   const infraChoice = await p.select({
     message: "How do you want to run PostgreSQL and Redis?",
     options: [
       {
         value: "docker",
         label: "Docker Compose",
-        hint: "spin up containers locally",
+        hint: "recommended for most self-hosted setups",
       },
       {
         value: "external",
         label: "External / Bring your own",
-        hint: "use existing database & Redis",
+        hint: "use existing managed Postgres + Redis",
       },
     ],
   });
@@ -668,28 +797,37 @@ async function runSetupAdvanced(options: { name?: string }) {
   // Ask if running full stack in Docker (only relevant for Docker infra)
   let runWebInDocker = false;
   if (useDockerInfra) {
-    const fullStackDocker = await p.select({
-      message: "Do you want to run the full stack in Docker?",
-      options: [
-        {
-          value: "no",
-          label: "No, just database & Redis",
-          hint: "I'll run Next.js separately with pnpm",
-        },
-        {
-          value: "yes",
-          label: "Yes, everything in Docker",
-          hint: "docker compose --profile all",
-        },
-      ],
-    });
+    if (!REPO_ROOT) {
+      runWebInDocker = true;
+      p.note(
+        "You're running setup outside the source repo, so the web app will run in Docker.\n" +
+          "If you want to run Next.js with pnpm, clone the repo and run setup there.",
+        "Web Runtime",
+      );
+    } else {
+      const fullStackDocker = await p.select({
+        message: "Do you want to run the full stack in Docker?",
+        options: [
+          {
+            value: "yes",
+            label: "Yes, everything in Docker",
+            hint: "recommended for production: docker compose --profile all",
+          },
+          {
+            value: "no",
+            label: "No, just database & Redis",
+            hint: "run Next.js separately with pnpm (repo mode only)",
+          },
+        ],
+      });
 
-    if (p.isCancel(fullStackDocker)) {
-      p.cancel("Setup cancelled.");
-      process.exit(0);
+      if (p.isCancel(fullStackDocker)) {
+        p.cancel("Setup cancelled.");
+        process.exit(0);
+      }
+
+      runWebInDocker = fullStackDocker === "yes";
     }
-
-    runWebInDocker = fullStackDocker === "yes";
   }
 
   if (useDockerInfra) {
@@ -921,7 +1059,9 @@ Full guide: https://docs.getinboxzero.com/self-hosting/microsoft-oauth`,
   if (useDockerInfra) {
     // Using Docker Compose for Postgres/Redis
     env.POSTGRES_USER = "postgres";
-    env.POSTGRES_PASSWORD = isDevMode ? "password" : generateSecret(16);
+    env.POSTGRES_PASSWORD =
+      readExistingDbPassword(envFile) ||
+      (isDevMode ? "password" : generateSecret(16));
     env.POSTGRES_DB = "inboxzero";
     env.UPSTASH_REDIS_TOKEN = redisToken;
 
@@ -1783,6 +1923,12 @@ function runDockerCommand(
       resolve({ status: 1, stdout: "", stderr: err.message });
     });
   });
+}
+
+function readExistingDbPassword(envFile: string): string | undefined {
+  if (!existsSync(envFile)) return undefined;
+  const existing = parseEnvFile(readFileSync(envFile, "utf-8"));
+  return existing.POSTGRES_PASSWORD || undefined;
 }
 
 function checkContainersRunning(composeArgs: string[]): boolean {

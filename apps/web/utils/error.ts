@@ -48,7 +48,7 @@ export function captureException(
   error: unknown,
   context: CaptureExceptionContext = {},
 ) {
-  if (isKnownApiError(error)) {
+  if (isKnownApiError(error) || isHandledUserKeyError(error)) {
     const logger = createScopedLogger("captureException");
     logger.warn("Known API error", { error, context });
     return;
@@ -145,6 +145,20 @@ export function isAnthropicInsufficientBalanceError(
   );
 }
 
+export function isInsufficientCreditsError(error: APICallError): boolean {
+  return error.statusCode === 402;
+}
+
+const HANDLED_USER_KEY_ERROR = "__handledUserKeyError";
+
+export function markAsHandledUserKeyError(error: unknown): void {
+  (error as Record<string, unknown>)[HANDLED_USER_KEY_ERROR] = true;
+}
+
+export function isHandledUserKeyError(error: unknown): boolean {
+  return (error as Record<string, unknown>)?.[HANDLED_USER_KEY_ERROR] === true;
+}
+
 // Handling AI quota/retry errors. This can be related to the user's own API quota or the system's quota.
 export function isAiQuotaExceededError(error: RetryError): boolean {
   const message = error.message.toLowerCase();
@@ -177,7 +191,43 @@ export function isOutlookThrottlingError(error: unknown): boolean {
     statusCode === 429 ||
     code === "ApplicationThrottled" ||
     code === "TooManyRequests" ||
-    (typeof message === "string" && /MailboxConcurrency/i.test(message))
+    (typeof message === "string" &&
+      (/MailboxConcurrency/i.test(message) ||
+        message.includes("Request limit")))
+  );
+}
+
+export function isOutlookAccessDeniedError(error: unknown): boolean {
+  const err = error as Record<string, unknown>;
+  const code = err?.code as string | undefined;
+  const message =
+    typeof err?.message === "string" ? err.message : String(err ?? "");
+  return (
+    code === "ErrorAccessDenied" ||
+    code === "AccessDenied" ||
+    message.includes("Access is denied. Check credentials and try again")
+  );
+}
+
+export function isOutlookItemNotFoundError(error: unknown): boolean {
+  const err = error as Record<string, unknown>;
+  const code = err?.code as string | undefined;
+  const message =
+    typeof err?.message === "string" ? err.message : String(err ?? "");
+  return (
+    code === "ErrorItemNotFound" ||
+    code === "itemNotFound" ||
+    message.includes("not found in the store") ||
+    message.includes("ResourceNotFound") ||
+    message.includes("isn't an ID of an item")
+  );
+}
+
+export function isKnownOutlookError(error: unknown): boolean {
+  return (
+    isOutlookThrottlingError(error) ||
+    isOutlookAccessDeniedError(error) ||
+    isOutlookItemNotFoundError(error)
   );
 }
 
@@ -195,7 +245,7 @@ export function isKnownApiError(error: unknown): boolean {
     isGmailInsufficientPermissionsError(error) ||
     isGmailRateLimitExceededError(error) ||
     isGmailQuotaExceededError(error) ||
-    isOutlookThrottlingError(error) ||
+    isKnownOutlookError(error) ||
     (APICallError.isInstance(error) &&
       (isIncorrectOpenAIAPIKeyError(error) ||
         isInvalidAIModelError(error) ||
@@ -247,6 +297,25 @@ export function checkCommonErrors(
       message:
         "Microsoft is temporarily limiting requests. Please try again shortly.",
       code: 429,
+    };
+  }
+
+  if (isOutlookAccessDeniedError(error)) {
+    logger.warn("Outlook access denied error for url", { url });
+    return {
+      type: "Outlook Access Denied",
+      message:
+        "Access to the mailbox was denied. The account may need to be reconnected.",
+      code: 403,
+    };
+  }
+
+  if (isOutlookItemNotFoundError(error)) {
+    logger.warn("Outlook item not found for url", { url });
+    return {
+      type: "Outlook Item Not Found",
+      message: "The requested email was not found. It may have been deleted.",
+      code: 404,
     };
   }
 

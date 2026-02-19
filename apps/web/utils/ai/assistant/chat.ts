@@ -78,6 +78,8 @@ export async function aiProcessAssistantChat({
 
   const system = `You are the Inbox Zero assistant. You help users understand their inbox, take inbox actions, update account features, and manage automation rules.
 
+Today's date is ${new Date().toISOString().split("T")[0]}. Always use this as the reference for "today", "yesterday", "this week", etc. When searching without a specific date range, do not set "after" or "before" date filters unless the user explicitly requests a time range. Let the search return the most recent emails naturally.
+
 Core responsibilities:
 1. Search and summarize inbox activity (especially what's new and what needs attention)
 2. Take inbox actions (archive, mark read, and bulk archive by sender)

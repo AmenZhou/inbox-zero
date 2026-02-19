@@ -153,16 +153,48 @@ AUTH_SECRET=your-generated-hex-value
 3. **Restart the dev server after changing `NEXT_PUBLIC_*` variables.**
    These are baked in at build time. Changes won't take effect until you restart `pnpm dev`.
 
-## Step 7: Verify Setup
+## Step 7: Activate Gmail Watch
+
+After signing in, you must activate the Gmail watch to enable real-time email notifications. The watch is **not triggered automatically on sign-in** — it requires calling a cron endpoint.
+
+Run this command to activate the watch for all accounts:
+
+```bash
+curl https://your-domain.com/api/watch/all \
+  -H "Authorization: Bearer YOUR_CRON_SECRET"
+```
+
+Replace `YOUR_CRON_SECRET` with the value of `CRON_SECRET` from your `.env` file.
+
+A successful response looks like:
+```json
+{
+  "success": true,
+  "results": [{
+    "emailAccountId": "...",
+    "status": "success",
+    "expirationDate": "2026-02-24T21:32:45.492Z"
+  }]
+}
+```
+
+**Important notes:**
+- The Gmail watch **expires after 7 days**. In production, a cron job should call this endpoint periodically to renew it.
+- The watch requires **AI access** (premium tier or user API key). If `NEXT_PUBLIC_BYPASS_PREMIUM_CHECKS=true` is set in your `.env`, this should be satisfied.
+- If the response shows `"User does not have access to AI"`, check your premium/API key configuration.
+
+## Step 8: Verify Setup
 
 1. Start the dev server: `pnpm dev`
 2. Start your tunnel (if using one for local dev)
 3. Visit your app URL and sign in with Google
-4. Test the webhook:
+4. Activate the Gmail watch (Step 7 above)
+5. Test the webhook endpoint:
    ```bash
    curl -s -o /dev/null -w "%{http_code}" https://your-domain.com/api/google/webhook
    ```
    A `405` response means the endpoint is reachable.
+6. Send yourself a test email and check the `pnpm dev` terminal for webhook activity.
 
 ## Cloudflare Tunnel Setup (Optional, for Local Development)
 
@@ -201,7 +233,8 @@ cloudflared tunnel run inbox-zero
 | `access_denied` / "not approved by Advanced Protection" | Use a Google account without Advanced Protection, or unenroll |
 | `403: access_denied` / "not completed Google verification" | Add your email as a test user in OAuth consent screen |
 | OAuth redirect mismatch | Ensure all redirect URIs are added in Credentials settings |
-| Webhook not receiving events | Verify Pub/Sub subscription push endpoint URL and tunnel is running |
+| Webhook not receiving events | 1) Activate Gmail watch via `curl /api/watch/all` with CRON_SECRET. 2) Verify Pub/Sub subscription push endpoint URL. 3) Ensure tunnel is running. |
+| No emails found by AI chat despite existing in Gmail | See **AI Chat Search Not Finding Emails** section below. |
 | `invalid_grant` on token refresh | User may have revoked access — reconnect the account |
 | "Sign in with Google error" on login page | Check that `NEXT_PUBLIC_BASE_URL` matches your access domain, and `AUTH_SECRET` is a fixed value (not a dynamic command). Restart dev server after changes. |
 | `please_restart_the_process` / "State mismatch: auth state cookie not found" | See **OAuth State Cookie Mismatch** section below. |
@@ -236,3 +269,41 @@ This typically happens when `NEXT_PUBLIC_BASE_URL` doesn't match the domain you'
    ```
    https://webhook.example.com/api/auth/callback/google
    ```
+
+### AI Chat Search Not Finding Emails
+
+**Symptom:** The AI chat assistant reports "no emails found" for a sender, even though the email exists in Gmail when searched directly.
+
+**Possible causes and fixes:**
+
+1. **AI using wrong date range (most common with OpenAI models)**
+
+   LLMs like `gpt-4o` don't know today's actual date and may set a `before` date filter using their training cutoff (e.g., `before: "2023-10-11"`), which excludes all recent emails.
+
+   **Fix:** The system prompt in `utils/ai/assistant/chat.ts` must include today's date so the AI knows the current time. This was fixed by adding:
+   ```
+   Today's date is ${new Date().toISOString().split("T")[0]}.
+   ```
+   to the system prompt. If the AI still uses a bad date range, start a **new chat** — the existing conversation history may have taught the AI to repeat the wrong pattern.
+
+2. **Gmail watch not activated**
+
+   Although the AI chat searches Gmail API directly (not via webhooks), the Gmail watch is needed for real-time notifications about new emails. Activate it with:
+   ```bash
+   curl https://your-domain.com/api/watch/all \
+     -H "Authorization: Bearer YOUR_CRON_SECRET"
+   ```
+
+3. **People API not enabled**
+
+   If you see `People API has not been used in project` errors in the server logs, enable the People API in Google Cloud Console.
+
+4. **`inboxOnly` default is `true`**
+
+   The search tool defaults to searching only the Inbox. Archived or labeled-only emails won't appear. Ask the AI to "search including archives" to set `inboxOnly: false`.
+
+5. **Email is in Spam or Trash**
+
+   Gmail API excludes Spam and Trash by default. These cannot be searched through the AI chat.
+
+**Debugging tip:** Check the `pnpm dev` terminal logs or browser Network tab for the actual search parameters the AI sends. Look at the `tool-input-available` event in the streaming response to see the exact `query`, `after`, `before`, and `inboxOnly` values used.

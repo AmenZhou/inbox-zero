@@ -107,7 +107,7 @@ const searchInboxInputSchema = z.object({
     .max(300)
     .optional()
     .describe(
-      "Inbox search query. Use concise keywords by default. For Google accounts, Gmail syntax like from:, to:, subject:, and in: is supported.",
+      "Inbox search query. Use concise keywords by default. For Google accounts, Gmail syntax like from:, to:, subject:, and in: is supported. IMPORTANT: Never nest quotes inside a subject: query. Use simple keywords instead, e.g. 'subject:Leaving Teladoc Health' not 'subject:\"You signed: \\\"Leaving Teladoc\\\"\"'.",
     ),
   after: z.coerce
     .date()
@@ -130,7 +130,7 @@ const searchInboxInputSchema = z.object({
     .describe("Use the page token returned from a prior search to paginate."),
   inboxOnly: z
     .boolean()
-    .default(true)
+    .default(false)
     .describe("If true, restrict results to inbox messages."),
   unreadOnly: z
     .boolean()
@@ -292,36 +292,34 @@ const senderEmailsSchema = z
   .max(100)
   .transform((emails) => [...new Set(emails)]);
 
-const manageInboxInputSchema = z.discriminatedUnion("action", [
-  z.object({
-    action: z.literal("archive_threads"),
-    threadIds: threadIdsSchema.describe(
-      "Thread IDs to archive. Provide IDs from searchInbox results.",
+// Using z.object with optional fields instead of z.discriminatedUnion
+// because OpenAI requires tool parameters to be type: "object" at the top level
+const manageInboxInputSchema = z.object({
+  action: z
+    .enum(["archive_threads", "mark_read_threads", "bulk_archive_senders"])
+    .describe("The inbox action to perform."),
+  threadIds: threadIdsSchema
+    .optional()
+    .describe(
+      "Thread IDs to archive or mark read/unread. Required for archive_threads and mark_read_threads.",
     ),
-    labelId: z
-      .string()
-      .optional()
-      .describe(
-        "Optional provider label/category ID to apply while archiving.",
-      ),
-  }),
-  z.object({
-    action: z.literal("mark_read_threads"),
-    threadIds: threadIdsSchema.describe(
-      "Thread IDs to mark read or unread. Provide IDs from searchInbox results.",
+  labelId: z
+    .string()
+    .optional()
+    .describe("Optional provider label/category ID to apply while archiving."),
+  read: z
+    .boolean()
+    .optional()
+    .default(true)
+    .describe(
+      "True to mark as read; false to mark as unread. Only used with mark_read_threads.",
     ),
-    read: z
-      .boolean()
-      .default(true)
-      .describe("True to mark as read; false to mark as unread."),
-  }),
-  z.object({
-    action: z.literal("bulk_archive_senders"),
-    fromEmails: senderEmailsSchema.describe(
-      "Sender email addresses to bulk archive by sender.",
+  fromEmails: senderEmailsSchema
+    .optional()
+    .describe(
+      "Sender email addresses to bulk archive. Required for bulk_archive_senders.",
     ),
-  }),
-]);
+});
 
 export const manageInboxTool = ({
   email,
@@ -349,6 +347,9 @@ export const manageInboxTool = ({
         });
 
         if (input.action === "bulk_archive_senders") {
+          if (!input.fromEmails?.length) {
+            return { error: "fromEmails is required for bulk_archive_senders" };
+          }
           await emailProvider.bulkArchiveFromSenders(
             input.fromEmails,
             email,
@@ -363,8 +364,14 @@ export const manageInboxTool = ({
           };
         }
 
+        if (!input.threadIds?.length) {
+          return { error: "threadIds is required for this action" };
+        }
+
+        const threadIds = input.threadIds;
+
         const threadActionResults = await runThreadActionsInParallel({
-          threadIds: input.threadIds,
+          threadIds,
           runAction: async (threadId) => {
             if (input.action === "archive_threads") {
               await emailProvider.archiveThreadWithLabel(
@@ -373,7 +380,7 @@ export const manageInboxTool = ({
                 input.labelId,
               );
             } else {
-              await emailProvider.markReadThread(threadId, input.read);
+              await emailProvider.markReadThread(threadId, input.read ?? true);
             }
           },
         });
@@ -387,7 +394,7 @@ export const manageInboxTool = ({
         return {
           success: failedThreadIds.length === 0,
           action: input.action,
-          requestedCount: input.threadIds.length,
+          requestedCount: threadIds.length,
           successCount,
           failedCount: failedThreadIds.length,
           failedThreadIds,

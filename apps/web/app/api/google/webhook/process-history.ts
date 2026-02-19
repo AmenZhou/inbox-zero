@@ -156,7 +156,10 @@ export async function processHistoryForUser(
   }
 }
 
-async function processHistory(options: ProcessHistoryOptions, logger: Logger) {
+export async function processHistory(
+  options: ProcessHistoryOptions,
+  logger: Logger,
+) {
   const { history, emailAccount } = options;
   const { email: userEmail, id: emailAccountId } = emailAccount;
 
@@ -230,7 +233,7 @@ async function processHistory(options: ProcessHistoryOptions, logger: Logger) {
  * race conditions where concurrent webhook processors might regress the pointer.
  * Only updates if the new value is greater than the current value.
  */
-async function updateLastSyncedHistoryId({
+export async function updateLastSyncedHistoryId({
   emailAccountId,
   lastSyncedHistoryId,
 }: {

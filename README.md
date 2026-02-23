@@ -116,6 +116,34 @@ Open http://localhost:3000
 
 See the **[Contributing Guide](https://docs.getinboxzero.com/contributing)** for more details including devcontainer setup.
 
+## Fork Customizations
+
+This fork ([AmenZhou/inbox-zero](https://github.com/AmenZhou/inbox-zero)) adds the following on top of upstream:
+
+### Gmail History Catch-Up
+
+Recovers missed Gmail webhook notifications after server downtime. History IDs are valid for ~1 week, so catch-up must happen within that window.
+
+**Standalone script** (no server needed):
+```bash
+./scripts/catch-up-history.sh [email]                # runs directly against DB + Gmail API
+./scripts/catch-up-history.sh --remote [email]        # calls the API endpoint (requires running server)
+```
+
+**API endpoint:**
+```
+GET /api/cron/catch-up-history?email=user@example.com
+Authorization: Bearer $CRON_SECRET
+```
+
+See [docs/catch-up-history.md](docs/catch-up-history.md) for full details.
+
+### Additional Docs
+
+- [Architecture Overview](docs/ARCHITECTURE.md)
+- [Google Cloud Setup Guide](docs/google-cloud-setup.md)
+- [Changelog](docs/CHANGELOG.md)
+
 ## Contributing
 
 View open tasks in [GitHub Issues](https://github.com/elie222/inbox-zero/issues) and join our [Discord](https://www.getinboxzero.com/discord) to discuss what's being worked on.

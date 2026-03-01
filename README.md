@@ -126,8 +126,9 @@ Recovers missed Gmail webhook notifications after server downtime. History IDs a
 
 **Standalone script** (no server needed):
 ```bash
-./scripts/catch-up-history.sh [email]                # runs directly against DB + Gmail API
-./scripts/catch-up-history.sh --remote [email]        # calls the API endpoint (requires running server)
+./scripts/catch-up-history.sh [email]                    # catch up missed webhooks
+./scripts/catch-up-history.sh [email] --send-summary     # catch up + send 24h digest (non-marketing only)
+./scripts/catch-up-history.sh --remote [email]           # calls the API endpoint (requires running server)
 ```
 
 **API endpoint:**
@@ -160,6 +161,7 @@ cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scr
 - [Architecture Overview](docs/ARCHITECTURE.md)
 - [Google Cloud Setup Guide](docs/google-cloud-setup.md)
 - [AI Processing Pipeline](docs/ai-processing.md)
+- [AI Orchestration & LangGraph Comparison](docs/ai-orchestration.md)
 - [Knowledge Base](docs/knowledge-base.md)
 - [Changelog](docs/CHANGELOG.md)
 

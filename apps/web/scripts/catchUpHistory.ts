@@ -1,7 +1,8 @@
-// Run with: cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/catchUpHistory.ts [email]
+// Run with: cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/catchUpHistory.ts [email] [--send-summary]
 
 import "dotenv/config";
 import prisma from "@/utils/prisma";
+import { sendDailySummary } from "./dailySummary";
 import { getGmailClientWithRefresh } from "@/utils/gmail/client";
 import { getHistory } from "@/utils/gmail/history";
 import {
@@ -155,7 +156,11 @@ function isHistoryIdExpiredError(error: unknown): boolean {
 }
 
 async function main() {
-  const emailFilter = process.argv[2] || null;
+  const sendSummary = process.argv.includes("--send-summary");
+  const emailFilter =
+    process.argv.find(
+      (a, i) => i >= 2 && !a.startsWith("--") && a !== process.argv[1],
+    ) || null;
 
   const whereClause = {
     lastSyncedHistoryId: { not: null as string | null },
@@ -201,6 +206,11 @@ async function main() {
   }
 
   console.log(JSON.stringify({ accounts: results }, null, 2));
+
+  if (sendSummary && emailFilter) {
+    logger.info("Sending daily summary", { email: emailFilter });
+    await sendDailySummary(emailFilter);
+  }
 }
 
 main()

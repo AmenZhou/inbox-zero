@@ -138,10 +138,29 @@ Authorization: Bearer $CRON_SECRET
 
 See [docs/catch-up-history.md](docs/catch-up-history.md) for full details.
 
+### Rule Export / Import (YAML)
+
+Export and import AI email rules as YAML for easy manual editing.
+
+**UI:** Settings → Assistant → Import / Export Rules — use the **Export YAML** or **Export JSON** buttons. Import accepts `.yaml`, `.yml`, or `.json`.
+
+**CLI scripts:**
+```bash
+# Export rules to YAML
+cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/exportRules.ts user@example.com
+# optionally specify output path
+cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/exportRules.ts user@example.com ~/my-rules.yaml
+
+# Import rules from YAML (updates existing by name/systemType, creates new)
+cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/importRules.ts user@example.com rules.yaml
+```
+
 ### Additional Docs
 
 - [Architecture Overview](docs/ARCHITECTURE.md)
 - [Google Cloud Setup Guide](docs/google-cloud-setup.md)
+- [AI Processing Pipeline](docs/ai-processing.md)
+- [Knowledge Base](docs/knowledge-base.md)
 - [Changelog](docs/CHANGELOG.md)
 
 ## Contributing

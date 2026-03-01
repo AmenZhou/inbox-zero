@@ -3,6 +3,7 @@
 import { useCallback, useRef } from "react";
 import { toast } from "sonner";
 import { DownloadIcon, UploadIcon } from "lucide-react";
+import { stringify, parse } from "yaml";
 import { Button } from "@/components/ui/button";
 import {
   Item,
@@ -23,10 +24,9 @@ export function RuleImportExportSetting({
   const { data, mutate } = useRules(emailAccountId);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const exportRules = useCallback(() => {
-    if (!data) return;
-
-    const exportData = data.map((rule) => ({
+  const buildExportData = useCallback(() => {
+    if (!data) return null;
+    return data.map((rule) => ({
       name: rule.name,
       instructions: rule.instructions,
       enabled: rule.enabled,
@@ -52,21 +52,36 @@ export function RuleImportExportSetting({
         delayInMinutes: action.delayInMinutes,
       })),
     }));
-
-    const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `inbox-zero-rules-${new Date().toISOString().split("T")[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    toast.success("Rules exported successfully");
   }, [data]);
+
+  const downloadFile = useCallback(
+    (content: string, mimeType: string, ext: string) => {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `inbox-zero-rules-${new Date().toISOString().split("T")[0]}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+    [],
+  );
+
+  const exportRulesAsYaml = useCallback(() => {
+    const exportData = buildExportData();
+    if (!exportData) return;
+    downloadFile(stringify(exportData), "text/yaml", "yaml");
+    toast.success("Rules exported as YAML");
+  }, [buildExportData, downloadFile]);
+
+  const exportRulesAsJson = useCallback(() => {
+    const exportData = buildExportData();
+    if (!exportData) return;
+    downloadFile(JSON.stringify(exportData, null, 2), "application/json", "json");
+    toast.success("Rules exported as JSON");
+  }, [buildExportData, downloadFile]);
 
   const importRules = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -75,8 +90,9 @@ export function RuleImportExportSetting({
 
       try {
         const text = await file.text();
-        const rules = JSON.parse(text);
-        const rulesArray = Array.isArray(rules) ? rules : rules.rules;
+        const isYaml = file.name.endsWith(".yaml") || file.name.endsWith(".yml");
+        const parsed = isYaml ? parse(text) : JSON.parse(text);
+        const rulesArray = Array.isArray(parsed) ? parsed : parsed.rules;
 
         if (!Array.isArray(rulesArray) || rulesArray.length === 0) {
           toastError({ description: "Invalid rules file format" });
@@ -125,10 +141,10 @@ export function RuleImportExportSetting({
           <input
             type="file"
             ref={fileInputRef}
-            accept=".json"
+            accept=".json,.yaml,.yml"
             onChange={importRules}
             className="hidden"
-            aria-label="Import rules from JSON file"
+            aria-label="Import rules from JSON or YAML file"
           />
           <Button
             size="sm"
@@ -141,11 +157,20 @@ export function RuleImportExportSetting({
           <Button
             size="sm"
             variant="outline"
-            onClick={exportRules}
+            onClick={exportRulesAsYaml}
             disabled={!data?.length}
           >
             <DownloadIcon className="mr-2 size-4" />
-            Export
+            Export YAML
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={exportRulesAsJson}
+            disabled={!data?.length}
+          >
+            <DownloadIcon className="mr-2 size-4" />
+            Export JSON
           </Button>
         </ItemActions>
       </Item>

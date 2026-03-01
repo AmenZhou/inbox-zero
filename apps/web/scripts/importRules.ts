@@ -4,10 +4,11 @@ import "dotenv/config";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parse } from "yaml";
+import type { ActionType } from "@/generated/prisma";
 import prisma from "@/utils/prisma";
 
 type RuleAction = {
-  type: string;
+  type: ActionType;
   label?: string | null;
   to?: string | null;
   cc?: string | null;

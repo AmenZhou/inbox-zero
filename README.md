@@ -1,172 +1,55 @@
-[![](apps/web/app/opengraph-image.png)](https://www.getinboxzero.com)
+# inbox-zero (personal fork)
 
-<p align="center">
-  <a href="https://www.getinboxzero.com">
-    <h1 align="center">Inbox Zero - your 24/7 AI email assistant</h1>
-  </a>
-  <p align="center">
-    Organizes your inbox, pre-drafts replies, and tracks follow‑ups - so you reach inbox zero faster. Open source alternative to Fyxer, but more customisable and secure.
-    <br />
-    <a href="https://www.getinboxzero.com">Website</a>
-    ·
-    <a href="https://www.getinboxzero.com/discord">Discord</a>
-    ·
-    <a href="https://github.com/elie222/inbox-zero/issues">Issues</a>
-  </p>
-</p>
+Forked from [elie222/inbox-zero](https://github.com/elie222/inbox-zero). The web app processes emails automatically via Gmail webhooks, but these CLI scripts fill gaps that the web app doesn't cover — running directly against the database and Gmail API with no server required.
 
-<div align="center">
+All scripts use the same prefix:
+```bash
+cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/<script>.ts
+```
 
-![Stars](https://img.shields.io/github/stars/elie222/inbox-zero?labelColor=black&style=for-the-badge&color=2563EB)
-![Forks](https://img.shields.io/github/forks/elie222/inbox-zero?labelColor=black&style=for-the-badge&color=2563EB)
+---
 
-<a href="https://trendshift.io/repositories/6400" target="_blank"><img src="https://trendshift.io/api/badge/repositories/6400" alt="elie222%2Finbox-zero | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+## Daily Digest
 
-[![Vercel OSS Program](https://vercel.com/oss/program-badge.svg)](https://vercel.com/oss)
-
-</div>
-
-## Mission
-
-To help you spend less time in your inbox, so you can focus on what matters most.
-
-<br />
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Felie222%2Finbox-zero&env=AUTH_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,EMAIL_ENCRYPT_SECRET,EMAIL_ENCRYPT_SALT,UPSTASH_REDIS_URL,UPSTASH_REDIS_TOKEN,GOOGLE_PUBSUB_TOPIC_NAME,DATABASE_URL,NEXT_PUBLIC_BASE_URL)
-
-## Features
-
-- **AI Personal Assistant:** Organizes your inbox and pre-drafts replies in your tone and style.
-- **Cursor Rules for email:** Explain in plain English how your AI should handle your inbox.
-- **Reply Zero:** Track emails to reply to and those awaiting responses.
-- **Bulk Unsubscriber:** One-click unsubscribe and archive emails you never read.
-- **Bulk Archiver:** Clean up your inbox by bulk archiving old emails.
-- **Cold Email Blocker:** Auto‑block cold emails.
-- **Email Analytics:** Track your activity and trends over time.
-- **Meeting Briefs:** Get personalized briefings before every meeting, pulling context from your email and calendar.
-- **Smart Filing:** Automatically save email attachments to Google Drive or OneDrive.
-
-
-Learn more in our [docs](https://docs.getinboxzero.com).
-
-## Feature Screenshots
-
-| ![AI Assistant](.github/screenshots/email-assistant.png) |        ![Reply Zero](.github/screenshots/reply-zero.png)        |
-| :------------------------------------------------------: | :-------------------------------------------------------------: |
-|                      _AI Assistant_                      |                          _Reply Zero_                           |
-|  ![Gmail Client](.github/screenshots/email-client.png)   | ![Bulk Unsubscriber](.github/screenshots/bulk-unsubscriber.png) |
-|                      _Gmail client_                      |                       _Bulk Unsubscriber_                       |
-
-## Demo Video
-
-[![Inbox Zero demo](/video-thumbnail.png)](http://www.youtube.com/watch?v=hfvKvTHBjG0)
-
-## Built with
-
-- [Next.js](https://nextjs.org/)
-- [Tailwind CSS](https://tailwindcss.com/)
-- [shadcn/ui](https://ui.shadcn.com/)
-- [Prisma](https://www.prisma.io/)
-- [Upstash](https://upstash.com/)
-- [Turborepo](https://turbo.build/)
-- [Popsy Illustrations](https://popsy.co/)
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=elie222/inbox-zero&type=Date)](https://www.star-history.com/#elie222/inbox-zero&Date)
-
-## Feature Requests
-
-To request a feature open a [GitHub issue](https://github.com/elie222/inbox-zero/issues), or join our [Discord](https://www.getinboxzero.com/discord).
-
-## Getting Started
-
-We offer a hosted version of Inbox Zero at [getinboxzero.com](https://www.getinboxzero.com).
-
-### Self-Hosting
-
-The fastest way to self-host Inbox Zero is with the CLI:
-
-> **Prerequisites**: [Docker](https://docs.docker.com/engine/install/) and [Node.js](https://nodejs.org/) v22+
+**Why:** The web app processes emails as they arrive but gives no daily overview. This script fetches the last 24 hours of non-marketing inbox emails, AI-summarizes each one, and delivers an HTML digest from your Gmail to yourself — useful for catching up without opening your inbox.
 
 ```bash
-npx @inbox-zero/cli setup      # One-time setup wizard
-npx @inbox-zero/cli start      # Start containers
+# 24h digest
+scripts/dailySummary.ts chou.amen@gmail.com
+
+# Custom time window
+scripts/dailySummary.ts chou.amen@gmail.com --hours 48
 ```
 
-Open http://localhost:3000
+---
 
-For complete self-hosting instructions, production deployment, OAuth setup, and configuration options, see our **[Self-Hosting Docs](https://docs.getinboxzero.com/hosting/quick-start)**.
+## Gmail History Catch-Up
 
-### Local Development
-
-> **Prerequisites**: [Docker](https://docs.docker.com/engine/install/), [Node.js](https://nodejs.org/) v22+, and [pnpm](https://pnpm.io/) v10+
+**Why:** Gmail webhooks are only delivered while the server is running. After downtime, those notifications are lost and emails go unprocessed. This script replays missed webhook history so the AI rules still run on emails that arrived while the server was down. History IDs expire after ~1 week.
 
 ```bash
-git clone https://github.com/elie222/inbox-zero.git
-cd inbox-zero
-docker compose -f docker-compose.dev.yml up -d   # Postgres + Redis
-pnpm install
-npm run setup                                     # Interactive env setup
-cd apps/web && pnpm prisma migrate dev && cd ../..
-pnpm dev
+# Catch up missed webhooks
+./scripts/catch-up-history.sh chou.amen@gmail.com
+
+# Catch up + send daily digest in one command
+./scripts/catch-up-history.sh chou.amen@gmail.com --send-summary
 ```
 
-Open http://localhost:3000
+---
 
-See the **[Contributing Guide](https://docs.getinboxzero.com/contributing)** for more details including devcontainer setup.
+## Rules
 
-## Fork Customizations
+**Why:** The web UI lets you create and edit rules one at a time. These scripts let you export rules to YAML for version control and bulk editing, then import them back — useful for backup, migration, or making large changes outside the UI.
 
-This fork ([AmenZhou/inbox-zero](https://github.com/AmenZhou/inbox-zero)) adds the following on top of upstream:
-
-### Gmail History Catch-Up
-
-Recovers missed Gmail webhook notifications after server downtime. History IDs are valid for ~1 week, so catch-up must happen within that window.
-
-**Standalone script** (no server needed):
-```bash
-./scripts/catch-up-history.sh [email]                    # catch up missed webhooks
-./scripts/catch-up-history.sh [email] --send-summary     # catch up + send 24h digest (non-marketing only)
-./scripts/catch-up-history.sh --remote [email]           # calls the API endpoint (requires running server)
-```
-
-**API endpoint:**
-```
-GET /api/cron/catch-up-history?email=user@example.com
-Authorization: Bearer $CRON_SECRET
-```
-
-See [docs/catch-up-history.md](docs/catch-up-history.md) for full details.
-
-### Rule Export / Import (YAML)
-
-Export and import AI email rules as YAML for easy manual editing.
-
-**UI:** Settings → Assistant → Import / Export Rules — use the **Export YAML** or **Export JSON** buttons. Import accepts `.yaml`, `.yml`, or `.json`.
-
-**CLI scripts:**
 ```bash
 # Export rules to YAML
-cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/exportRules.ts user@example.com
-# optionally specify output path
-cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/exportRules.ts user@example.com ~/my-rules.yaml
+scripts/exportRules.ts chou.amen@gmail.com
 
-# Import rules from YAML (updates existing by name/systemType, creates new)
-cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/importRules.ts user@example.com rules.yaml
+# Import rules from YAML (creates new, updates existing by name)
+scripts/importRules.ts chou.amen@gmail.com rules.yaml
+
+# Delete all rules
+scripts/deleteRules.ts chou.amen@gmail.com
 ```
 
-### Additional Docs
-
-- [Architecture Overview](docs/ARCHITECTURE.md)
-- [Google Cloud Setup Guide](docs/google-cloud-setup.md)
-- [AI Processing Pipeline](docs/ai-processing.md)
-- [AI Orchestration & LangGraph Comparison](docs/ai-orchestration.md)
-- [Knowledge Base](docs/knowledge-base.md)
-- [Changelog](docs/CHANGELOG.md)
-
-## Contributing
-
-View open tasks in [GitHub Issues](https://github.com/elie222/inbox-zero/issues) and join our [Discord](https://www.getinboxzero.com/discord) to discuss what's being worked on.
-
-Docker images are automatically built on every push to `main` and tagged with the commit SHA (e.g., `elie222/inbox-zero:abc1234`). The `latest` tag always points to the most recent main build. Formal releases use version tags (e.g., `v2.26.0`).
+Rules can also be managed in the UI: **Settings → Assistant → Import / Export Rules**

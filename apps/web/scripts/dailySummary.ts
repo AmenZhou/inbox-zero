@@ -82,13 +82,34 @@ export async function sendDailySummary(email: string, hours = 24) {
     return;
   }
 
+  // Filter to only emails not yet processed by the rules engine
+  const processedRules = await prisma.executedRule.findMany({
+    where: {
+      emailAccountId: emailAccount.id,
+      messageId: { in: messages.map((m) => m.id) },
+    },
+    select: { messageId: true },
+  });
+  const processedIds = new Set(processedRules.map((r) => r.messageId));
+  const unprocessedMessages = messages.filter((m) => !processedIds.has(m.id));
+
+  summaryLogger.info("Filtered to unprocessed messages", {
+    total: messages.length,
+    unprocessed: unprocessedMessages.length,
+  });
+
+  if (unprocessedMessages.length === 0) {
+    summaryLogger.info("No unprocessed messages, skipping digest");
+    return;
+  }
+
   const emailAccountWithAI = {
     ...emailAccount,
     name: emailAccount.user.name,
   };
 
   const results = await Promise.allSettled(
-    messages.map(async (message) => {
+    unprocessedMessages.map(async (message) => {
       const emailForLLM = getEmailForLLM(message);
       const summary = await aiSummarizeEmailForDigest({
         ruleName: "Daily Digest",
@@ -114,7 +135,7 @@ export async function sendDailySummary(email: string, hours = 24) {
     .map((r) => r.value);
 
   summaryLogger.info("Summarized messages", {
-    total: messages.length,
+    total: unprocessedMessages.length,
     summarized: digestItems.length,
   });
 

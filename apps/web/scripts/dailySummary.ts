@@ -145,7 +145,7 @@ export async function sendDailySummary(email: string, hours = 24) {
   }
 
   const date = new Date();
-  const subject = `Daily Inbox Digest — ${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`;
+  const subject = `Daily Inbox Digest - ${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`;
   const html = buildDigestHtml(digestItems, date);
   const raw = buildRawMessage({ to: email, from: email, subject, html });
 
@@ -222,7 +222,7 @@ function buildDigestHtml(items: DigestItem[], date: Date): string {
 <html>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:620px;margin:0 auto;padding:24px;color:#111;">
   <h2 style="margin:0 0 4px;font-size:20px;">Daily Inbox Digest</h2>
-  <p style="margin:0 0 20px;color:#6b7280;font-size:14px;">${escapeHtml(dateStr)} &mdash; ${items.length} email${items.length === 1 ? "" : "s"}</p>
+  <p style="margin:0 0 20px;color:#6b7280;font-size:14px;">${escapeHtml(dateStr)} - ${items.length} email${items.length === 1 ? "" : "s"}</p>
   <table style="width:100%;border-collapse:collapse;">${rows}</table>
 </body>
 </html>`;

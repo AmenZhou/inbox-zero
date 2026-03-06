@@ -178,6 +178,12 @@ async function main() {
     select: { id: true, email: true },
   });
 
+  // Send summary before catch-up so unprocessed emails are still unprocessed
+  if (sendSummary && emailFilter) {
+    logger.info("Sending daily summary", { email: emailFilter });
+    await sendDailySummary(emailFilter);
+  }
+
   logger.info("Starting catch-up", { accountCount: emailAccounts.length });
 
   const results: Array<{
@@ -206,11 +212,6 @@ async function main() {
   }
 
   console.log(JSON.stringify({ accounts: results }, null, 2));
-
-  if (sendSummary && emailFilter) {
-    logger.info("Sending daily summary", { email: emailFilter });
-    await sendDailySummary(emailFilter);
-  }
 }
 
 main()

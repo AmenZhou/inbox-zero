@@ -179,12 +179,15 @@ async function main() {
   await sendDailySummary(emailArg, hours);
 }
 
-main()
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+// Only run main() when executed directly, not when imported by another script
+if (process.argv[1]?.endsWith("dailySummary.ts")) {
+  main()
+    .catch((error) => {
+      console.error(error);
+      process.exit(1);
+    })
+    .finally(() => prisma.$disconnect());
+}
 
 function escapeHtml(str: string): string {
   return str

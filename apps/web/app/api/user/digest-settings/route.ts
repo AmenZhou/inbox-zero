@@ -13,7 +13,7 @@ const SUPPORTED_SYSTEM_TYPES = [
   SystemType.MARKETING,
   SystemType.CALENDAR,
   SystemType.RECEIPT,
-  SystemType.NOTIFICATION,
+  SystemType.NOTIFICATION, // merged into FYI; kept for backward compat with existing rules
   SystemType.COLD_EMAIL,
 ] as const;
 
@@ -61,7 +61,6 @@ async function getDigestSettings({
       marketing: false,
       calendar: false,
       receipt: false,
-      notification: false,
       coldEmail: false,
     };
   }
@@ -76,7 +75,6 @@ async function getDigestSettings({
     marketing: false,
     calendar: false,
     receipt: false,
-    notification: false,
     coldEmail: false,
   };
 
@@ -90,7 +88,7 @@ async function getDigestSettings({
     [SystemType.MARKETING]: "marketing",
     [SystemType.CALENDAR]: "calendar",
     [SystemType.RECEIPT]: "receipt",
-    [SystemType.NOTIFICATION]: "notification",
+    [SystemType.NOTIFICATION]: "fyi", // merged into FYI
     [SystemType.COLD_EMAIL]: "coldEmail",
   };
 

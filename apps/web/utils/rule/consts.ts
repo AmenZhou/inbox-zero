@@ -40,11 +40,11 @@ const ruleConfig: Record<
   [SystemType.FYI]: {
     name: "FYI",
     instructions:
-      "Important emails I should know about, but don't need to reply to",
+      "Important emails I should know about, but don't need to reply to, including notifications, alerts, status updates, and system messages",
     label: "FYI",
     runOnThreads: true,
     categoryAction: "label",
-    tooltipText: "",
+    tooltipText: "Emails to be aware of, including alerts and status updates",
     shouldLearn: false,
   },
   [SystemType.ACTIONED]: {
@@ -159,7 +159,6 @@ export const SYSTEM_RULE_ORDER: SystemType[] = [
   SystemType.MARKETING,
   SystemType.CALENDAR,
   SystemType.RECEIPT,
-  SystemType.NOTIFICATION,
   SystemType.COLD_EMAIL,
 ];
 

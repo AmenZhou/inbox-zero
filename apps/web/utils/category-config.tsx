@@ -12,7 +12,6 @@ import {
   MegaphoneIcon,
   CalendarIcon,
   ReceiptIcon,
-  BellIcon,
   UsersIcon,
 } from "lucide-react";
 
@@ -65,14 +64,6 @@ export const categoryConfig = (
     Icon: ReceiptIcon,
     iconColor: "orange",
     action: getCategoryAction(SystemType.RECEIPT, provider),
-  },
-  {
-    key: SystemType.NOTIFICATION,
-    label: getRuleLabel(SystemType.NOTIFICATION),
-    tooltipText: getRuleConfig(SystemType.NOTIFICATION).tooltipText,
-    Icon: BellIcon,
-    iconColor: "red",
-    action: getCategoryAction(SystemType.NOTIFICATION, provider),
   },
   {
     key: SystemType.COLD_EMAIL,

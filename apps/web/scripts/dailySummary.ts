@@ -13,7 +13,22 @@ const logger = createScopedLogger("daily-summary");
 
 type DigestItem = { from: string; subject: string; content: string };
 
-export async function sendDailySummary(email: string, hours = 24) {
+// Fallback window used on first run / when the account has no `lastDigestSentAt`
+// watermark yet (R-1 decision: docs/catch-up-summary-window.md).
+const FALLBACK_HOURS = 72;
+
+/**
+ * Send the daily catch-up digest.
+ *
+ * @param email   the email account to summarize
+ * @param hours   optional manual override. When provided, the window is a fixed
+ *                `newer_than:${hours}h` slice and the per-account watermark is NOT
+ *                advanced (ad-hoc runs must not move the watermark). When omitted,
+ *                the automatic catch-up path covers everything since the last digest
+ *                (`after:<lastDigestSentAt>`, falling back to 72h on first run) and
+ *                advances `lastDigestSentAt` after a successful send.
+ */
+export async function sendDailySummary(email: string, hours?: number) {
   const summaryLogger = logger.with({ email, hours });
 
   const emailAccount = await prisma.emailAccount.findUnique({
@@ -26,6 +41,7 @@ export async function sendDailySummary(email: string, hours = 24) {
       multiRuleSelectionEnabled: true,
       timezone: true,
       calendarBookingLink: true,
+      lastDigestSentAt: true,
       user: {
         select: {
           name: true,
@@ -66,7 +82,34 @@ export async function sendDailySummary(email: string, hours = 24) {
     logger: summaryLogger,
   });
 
-  const query = `in:inbox newer_than:${hours}h -label:Marketing -label:Newsletter -label:Receipt -category:promotions`;
+  // Resolve the time window once, up front.
+  // - Manual override (`--hours` passed): fixed `newer_than:${hours}h` slice; does
+  //   NOT advance the watermark.
+  // - Automatic catch-up (no `--hours`): everything since the last successful digest
+  //   (`after:<lastDigestSentAt>`), falling back to FALLBACK_HOURS on first run / null.
+  const isManualOverride = hours !== undefined;
+  const exclusions =
+    "-label:Marketing -label:Newsletter -label:Receipt -category:promotions";
+
+  let query: string;
+  if (isManualOverride) {
+    query = `in:inbox newer_than:${hours}h ${exclusions}`;
+  } else {
+    const now = Date.now();
+    const sinceMs = emailAccount.lastDigestSentAt
+      ? emailAccount.lastDigestSentAt.getTime()
+      : now - FALLBACK_HOURS * 60 * 60 * 1000;
+    // Gmail `after:` accepts Unix-epoch seconds.
+    const afterEpoch = Math.floor(sinceMs / 1000);
+    query = `in:inbox after:${afterEpoch} ${exclusions}`;
+  }
+
+  summaryLogger.info("Resolved digest window", {
+    mode: isManualOverride ? "manual-override" : "since-last-digest",
+    lastDigestSentAt: emailAccount.lastDigestSentAt ?? null,
+    fallbackHours: isManualOverride ? null : FALLBACK_HOURS,
+    query,
+  });
 
   summaryLogger.info("Fetching inbox messages", { query });
 
@@ -155,6 +198,16 @@ export async function sendDailySummary(email: string, hours = 24) {
   });
 
   summaryLogger.info("Digest email sent", { itemCount: digestItems.length });
+
+  // Advance the watermark ONLY after a successful send, and ONLY on the automatic
+  // catch-up path. Manual `--hours` runs must not move the watermark.
+  if (!isManualOverride) {
+    await prisma.emailAccount.update({
+      where: { id: emailAccount.id },
+      data: { lastDigestSentAt: new Date() },
+    });
+    summaryLogger.info("Advanced lastDigestSentAt watermark");
+  }
 }
 
 async function main() {
@@ -169,12 +222,14 @@ async function main() {
     process.exit(1);
   }
 
+  // Only pass `hours` when `--hours` is explicitly provided. With no override the
+  // script uses the automatic since-last-digest window (R-1 Strategy A).
   const hours = hoursArg
     ? Number.parseInt(
         hoursArg.split("=")[1] ?? hoursArg.split(" ")[1] ?? "24",
         10,
       )
-    : 24;
+    : undefined;
 
   await sendDailySummary(emailArg, hours);
 }

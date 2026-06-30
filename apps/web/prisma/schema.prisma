@@ -133,6 +133,7 @@ model EmailAccount {
   statsEmailFrequency       Frequency         @default(WEEKLY)
   summaryEmailFrequency     Frequency         @default(WEEKLY)
   lastSummaryEmailAt        DateTime?
+  lastDigestSentAt          DateTime? // Watermark for the daily catch-up digest (scripts/dailySummary.ts); null = never sent / first run
   coldEmailBlocker          ColdEmailSetting? // @deprecated
   coldEmailDigest           Boolean           @default(false) // @deprecated
   coldEmailPrompt           String? // @deprecated

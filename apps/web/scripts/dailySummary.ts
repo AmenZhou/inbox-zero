@@ -17,6 +17,24 @@ type DigestItem = { from: string; subject: string; content: string };
 // watermark yet (R-1 decision: docs/catch-up-summary-window.md).
 const FALLBACK_HOURS = 72;
 
+// Safety upper bound on how many inbox messages a single digest run will fetch.
+// `queryBatchMessagesPages` treats its `maxResults` as a HARD cap on the total
+// number of messages collected across all pages — NOT a per-page size. The old
+// call site passed `100`, which silently dropped everything past the first 100
+// whenever the backlog was larger (common after a multi-day gap, more so now that
+// CU-1 widened the window to "since last digest"). We raise this to a value that
+// comfortably exceeds a realistic multi-day backlog so the digest covers the full
+// set, while still capping unbounded fetches. When this bound is actually hit we
+// log a WARN with the count rather than silently truncating (CU-2).
+const MAX_DIGEST_MESSAGES = 1000;
+
+// Upper bound on how many summarized items we put into a single digest email.
+// A very large item list can push the rendered HTML past Gmail's send-size limit
+// and fail the whole send. To keep the digest reliable, we render at most this
+// many items and append a visible "+N more" notice when the list is longer, so
+// the email always sends and the truncation is observable (CU-2).
+const MAX_DIGEST_ITEMS_PER_EMAIL = 200;
+
 /**
  * Send the daily catch-up digest.
  *
@@ -111,14 +129,35 @@ export async function sendDailySummary(email: string, hours?: number) {
     query,
   });
 
-  summaryLogger.info("Fetching inbox messages", { query });
-
-  const messages = await queryBatchMessagesPages(gmail, {
+  summaryLogger.info("Fetching inbox messages", {
     query,
-    maxResults: 100,
+    cap: MAX_DIGEST_MESSAGES,
   });
 
-  summaryLogger.info("Fetched messages", { count: messages.length });
+  // Fetch the FULL backlog for the window (up to the safety bound), not just the
+  // first 100. `maxResults` here is a total-across-pages cap, so passing
+  // MAX_DIGEST_MESSAGES lets the loop page through everything matching `query`.
+  const messages = await queryBatchMessagesPages(gmail, {
+    query,
+    maxResults: MAX_DIGEST_MESSAGES,
+  });
+
+  // If we collected at least the cap, paging stopped at the bound and there may be
+  // more unfetched messages — surface this rather than letting it pass silently.
+  const capHit = messages.length >= MAX_DIGEST_MESSAGES;
+
+  summaryLogger.info("Fetched messages", {
+    fetched: messages.length,
+    cap: MAX_DIGEST_MESSAGES,
+    capHit,
+  });
+
+  if (capHit) {
+    summaryLogger.warn(
+      "Digest fetch hit the MAX_DIGEST_MESSAGES safety bound; backlog may be truncated",
+      { fetched: messages.length, cap: MAX_DIGEST_MESSAGES },
+    );
+  }
 
   if (messages.length === 0) {
     summaryLogger.info("No messages to summarize, skipping digest");
@@ -187,9 +226,29 @@ export async function sendDailySummary(email: string, hours?: number) {
     return;
   }
 
+  // Guard the rendered email against Gmail's send-size limit: a very large item
+  // list can produce HTML big enough to fail the send outright. We truncate to
+  // MAX_DIGEST_ITEMS_PER_EMAIL and pass the omitted count so the email shows a
+  // visible "+N more" notice — the send always succeeds and the truncation is
+  // observable (CU-2). This is independent of the fetch-side MAX_DIGEST_MESSAGES.
+  const renderedItems = digestItems.slice(0, MAX_DIGEST_ITEMS_PER_EMAIL);
+  const omittedItemCount = digestItems.length - renderedItems.length;
+
+  if (omittedItemCount > 0) {
+    summaryLogger.warn(
+      "Digest item list exceeds per-email render limit; truncating with notice",
+      {
+        total: digestItems.length,
+        rendered: renderedItems.length,
+        omitted: omittedItemCount,
+        limit: MAX_DIGEST_ITEMS_PER_EMAIL,
+      },
+    );
+  }
+
   const date = new Date();
   const subject = `Daily Inbox Digest - ${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`;
-  const html = buildDigestHtml(digestItems, date);
+  const html = buildDigestHtml(renderedItems, date, omittedItemCount);
   const raw = buildRawMessage({ to: email, from: email, subject, html });
 
   await gmail.users.messages.send({
@@ -197,7 +256,12 @@ export async function sendDailySummary(email: string, hours?: number) {
     requestBody: { raw },
   });
 
-  summaryLogger.info("Digest email sent", { itemCount: digestItems.length });
+  summaryLogger.info("Digest email sent", {
+    itemCount: renderedItems.length,
+    totalItems: digestItems.length,
+    omittedItems: omittedItemCount,
+    largeDigestHandling: "truncate-with-notice",
+  });
 
   // Advance the watermark ONLY after a successful send, and ONLY on the automatic
   // catch-up path. Manual `--hours` runs must not move the watermark.
@@ -252,7 +316,11 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildDigestHtml(items: DigestItem[], date: Date): string {
+function buildDigestHtml(
+  items: DigestItem[],
+  date: Date,
+  omittedItemCount = 0,
+): string {
   const dateStr = date.toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
@@ -273,12 +341,20 @@ function buildDigestHtml(items: DigestItem[], date: Date): string {
     )
     .join("");
 
+  const moreNotice =
+    omittedItemCount > 0
+      ? `<p style="margin:16px 0 0;color:#6b7280;font-size:13px;font-style:italic;">+${omittedItemCount} more email${omittedItemCount === 1 ? "" : "s"} not shown (digest truncated to keep this email a sendable size).</p>`
+      : "";
+
+  const countLabel = omittedItemCount > 0 ? items.length + omittedItemCount : items.length;
+
   return `<!DOCTYPE html>
 <html>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:620px;margin:0 auto;padding:24px;color:#111;">
   <h2 style="margin:0 0 4px;font-size:20px;">Daily Inbox Digest</h2>
-  <p style="margin:0 0 20px;color:#6b7280;font-size:14px;">${escapeHtml(dateStr)} - ${items.length} email${items.length === 1 ? "" : "s"}</p>
+  <p style="margin:0 0 20px;color:#6b7280;font-size:14px;">${escapeHtml(dateStr)} - ${countLabel} email${countLabel === 1 ? "" : "s"}</p>
   <table style="width:100%;border-collapse:collapse;">${rows}</table>
+  ${moreNotice}
 </body>
 </html>`;
 }

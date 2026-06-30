@@ -190,36 +190,106 @@ export async function sendDailySummary(email: string, hours?: number) {
     name: emailAccount.user.name,
   };
 
-  const results = await Promise.allSettled(
-    unprocessedMessages.map(async (message) => {
+  // Summarize every unprocessed, in-window email. We MUST NOT silently drop any:
+  // an email that fails AI summarization (throws, or returns null) still appears
+  // in the digest as a FALLBACK entry (from + subject + a "summary unavailable"
+  // note). This maps each message to exactly one DigestItem — a real summary or a
+  // fallback — so the digest count always equals the unprocessed count (CU-3).
+  const SUMMARY_RETRIES = 1; // one retry after the initial attempt
+  const RETRY_BACKOFF_MS = 500;
+
+  let summarizedCount = 0;
+  let fallbackCount = 0;
+
+  const digestItems: DigestItem[] = await Promise.all(
+    unprocessedMessages.map(async (message): Promise<DigestItem> => {
+      const from = extractNameFromEmail(message.headers.from);
+      const subject = message.headers.subject;
       const emailForLLM = getEmailForLLM(message);
-      const summary = await aiSummarizeEmailForDigest({
-        ruleName: "Daily Digest",
-        emailAccount: emailAccountWithAI,
-        messageToSummarize: emailForLLM,
-      });
 
-      if (!summary) return null;
-
-      return {
-        from: extractNameFromEmail(message.headers.from),
-        subject: message.headers.subject,
-        content: summary.content,
+      const fallbackItem = (reason: string): DigestItem => {
+        summaryLogger.warn("Email could not be summarized; using fallback entry", {
+          messageId: message.id,
+          from,
+          subject,
+          reason,
+        });
+        fallbackCount++;
+        return {
+          from,
+          subject,
+          content: "(Summary unavailable — this email could not be summarized.)",
+        };
       };
+
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= SUMMARY_RETRIES; attempt++) {
+        try {
+          const summary = await aiSummarizeEmailForDigest({
+            ruleName: "Daily Digest",
+            emailAccount: emailAccountWithAI,
+            messageToSummarize: emailForLLM,
+          });
+
+          // A null result is a definitive "no summary" — retrying will not help,
+          // so fall back immediately rather than burning the retry budget.
+          if (!summary) {
+            return fallbackItem("aiSummarizeEmailForDigest returned null");
+          }
+
+          summarizedCount++;
+          return { from, subject, content: summary.content };
+        } catch (error) {
+          lastError = error;
+          if (attempt < SUMMARY_RETRIES) {
+            summaryLogger.warn("Summarization attempt failed; retrying", {
+              messageId: message.id,
+              from,
+              subject,
+              attempt: attempt + 1,
+              maxAttempts: SUMMARY_RETRIES + 1,
+            });
+            await new Promise((resolve) =>
+              setTimeout(resolve, RETRY_BACKOFF_MS),
+            );
+          }
+        }
+      }
+
+      return fallbackItem(
+        `aiSummarizeEmailForDigest threw after ${SUMMARY_RETRIES + 1} attempt(s): ${
+          lastError instanceof Error ? lastError.message : String(lastError)
+        }`,
+      );
     }),
   );
 
-  const digestItems = results
-    .filter(
-      (r): r is PromiseFulfilledResult<DigestItem> =>
-        r.status === "fulfilled" && r.value !== null,
-    )
-    .map((r) => r.value);
-
-  summaryLogger.info("Summarized messages", {
-    total: unprocessedMessages.length,
-    summarized: digestItems.length,
+  // Reconciliation: every fetched, in-window (unprocessed) email must be accounted
+  // for as either a real summary or a fallback. Assert the invariant in the log so
+  // any silent gap is immediately visible (CU-3).
+  const reconciliationOk =
+    summarizedCount + fallbackCount === unprocessedMessages.length &&
+    digestItems.length === unprocessedMessages.length;
+  summaryLogger.info("Summarization reconciliation", {
+    fetched: messages.length,
+    unprocessed: unprocessedMessages.length,
+    summarized: summarizedCount,
+    fallback: fallbackCount,
+    invariant: `Z + W == Y (${summarizedCount} + ${fallbackCount} == ${unprocessedMessages.length})`,
+    reconciliationOk,
   });
+  if (!reconciliationOk) {
+    summaryLogger.error(
+      "Digest reconciliation invariant violated — emails may have been silently dropped",
+      {
+        fetched: messages.length,
+        unprocessed: unprocessedMessages.length,
+        summarized: summarizedCount,
+        fallback: fallbackCount,
+        digestItems: digestItems.length,
+      },
+    );
+  }
 
   if (digestItems.length === 0) {
     summaryLogger.info("No summaries produced, skipping digest");

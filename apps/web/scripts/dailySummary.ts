@@ -1,6 +1,7 @@
 // Run with: cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/dailySummary.ts user@example.com [--hours 48]
 
 import "dotenv/config";
+import PQueue from "p-queue";
 import prisma from "@/utils/prisma";
 import { getGmailClientWithRefresh } from "@/utils/gmail/client";
 import { queryBatchMessagesPages } from "@/utils/gmail/message";
@@ -34,6 +35,12 @@ const MAX_DIGEST_MESSAGES = 1000;
 // many items and append a visible "+N more" notice when the list is longer, so
 // the email always sends and the truncation is observable (CU-2).
 const MAX_DIGEST_ITEMS_PER_EMAIL = 200;
+
+// Max concurrent per-email summaries. A call takes ~2-5 s at the model's default reasoning effort,
+// so 4 in flight is ~50-120 requests/min against the account's 500 RPM / 200K TPM
+// limit (tokens, not requests, are the binding limit). The unbounded Promise.all
+// this replaced fired the whole backlog (up to MAX_DIGEST_MESSAGES) at once.
+const SUMMARY_CONCURRENCY = 4;
 
 /**
  * Send the daily catch-up digest.
@@ -201,67 +208,75 @@ export async function sendDailySummary(email: string, hours?: number) {
   let summarizedCount = 0;
   let fallbackCount = 0;
 
+  const summaryQueue = new PQueue({ concurrency: SUMMARY_CONCURRENCY });
+  // Promise.all over queue.add keeps results in message order.
   const digestItems: DigestItem[] = await Promise.all(
-    unprocessedMessages.map(async (message): Promise<DigestItem> => {
-      const from = extractNameFromEmail(message.headers.from);
-      const subject = message.headers.subject;
-      const emailForLLM = getEmailForLLM(message);
+    unprocessedMessages.map((message) =>
+      summaryQueue.add(async (): Promise<DigestItem> => {
+        const from = extractNameFromEmail(message.headers.from);
+        const subject = message.headers.subject;
+        const emailForLLM = getEmailForLLM(message);
 
-      const fallbackItem = (reason: string): DigestItem => {
-        summaryLogger.warn("Email could not be summarized; using fallback entry", {
-          messageId: message.id,
-          from,
-          subject,
-          reason,
-        });
-        fallbackCount++;
-        return {
-          from,
-          subject,
-          content: "(Summary unavailable — this email could not be summarized.)",
-        };
-      };
-
-      let lastError: unknown;
-      for (let attempt = 0; attempt <= SUMMARY_RETRIES; attempt++) {
-        try {
-          const summary = await aiSummarizeEmailForDigest({
-            ruleName: "Daily Digest",
-            emailAccount: emailAccountWithAI,
-            messageToSummarize: emailForLLM,
-          });
-
-          // A null result is a definitive "no summary" — retrying will not help,
-          // so fall back immediately rather than burning the retry budget.
-          if (!summary) {
-            return fallbackItem("aiSummarizeEmailForDigest returned null");
-          }
-
-          summarizedCount++;
-          return { from, subject, content: summary.content };
-        } catch (error) {
-          lastError = error;
-          if (attempt < SUMMARY_RETRIES) {
-            summaryLogger.warn("Summarization attempt failed; retrying", {
+        const fallbackItem = (reason: string): DigestItem => {
+          summaryLogger.warn(
+            "Email could not be summarized; using fallback entry",
+            {
               messageId: message.id,
               from,
               subject,
-              attempt: attempt + 1,
-              maxAttempts: SUMMARY_RETRIES + 1,
+              reason,
+            },
+          );
+          fallbackCount++;
+          return {
+            from,
+            subject,
+            content:
+              "(Summary unavailable — this email could not be summarized.)",
+          };
+        };
+
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= SUMMARY_RETRIES; attempt++) {
+          try {
+            const summary = await aiSummarizeEmailForDigest({
+              ruleName: "Daily Digest",
+              emailAccount: emailAccountWithAI,
+              messageToSummarize: emailForLLM,
             });
-            await new Promise((resolve) =>
-              setTimeout(resolve, RETRY_BACKOFF_MS),
-            );
+
+            // A null result is a definitive "no summary" — retrying will not help,
+            // so fall back immediately rather than burning the retry budget.
+            if (!summary) {
+              return fallbackItem("aiSummarizeEmailForDigest returned null");
+            }
+
+            summarizedCount++;
+            return { from, subject, content: summary.content };
+          } catch (error) {
+            lastError = error;
+            if (attempt < SUMMARY_RETRIES) {
+              summaryLogger.warn("Summarization attempt failed; retrying", {
+                messageId: message.id,
+                from,
+                subject,
+                attempt: attempt + 1,
+                maxAttempts: SUMMARY_RETRIES + 1,
+              });
+              await new Promise((resolve) =>
+                setTimeout(resolve, RETRY_BACKOFF_MS),
+              );
+            }
           }
         }
-      }
 
-      return fallbackItem(
-        `aiSummarizeEmailForDigest threw after ${SUMMARY_RETRIES + 1} attempt(s): ${
-          lastError instanceof Error ? lastError.message : String(lastError)
-        }`,
-      );
-    }),
+        return fallbackItem(
+          `aiSummarizeEmailForDigest threw after ${SUMMARY_RETRIES + 1} attempt(s): ${
+            lastError instanceof Error ? lastError.message : String(lastError)
+          }`,
+        );
+      }),
+    ),
   );
 
   // Reconciliation: every fetched, in-window (unprocessed) email must be accounted

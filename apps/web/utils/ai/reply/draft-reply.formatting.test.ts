@@ -18,6 +18,7 @@ vi.mock("@/utils/llms/model", () => ({
     providerOptions: undefined,
     backupModel: null,
   })),
+  withHighReasoningEffort: vi.fn((modelOptions) => modelOptions),
 }));
 
 vi.mock("@/utils/llms/index", () => ({

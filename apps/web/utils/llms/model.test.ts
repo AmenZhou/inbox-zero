@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getModel } from "./model";
+import { getModel, withHighReasoningEffort } from "./model";
 import { Provider } from "./config";
 import { env } from "@/env";
 import type { UserAIFields } from "./types";
@@ -329,6 +329,155 @@ describe("Models", () => {
         "Google Vertex",
         "Anthropic",
       ]);
+    });
+
+    describe("default OpenAI reasoning options", () => {
+      const noKey: UserAIFields = {
+        aiApiKey: null,
+        aiProvider: null,
+        aiModel: null,
+      };
+
+      beforeEach(() => {
+        vi.mocked(env).OPENAI_ZERO_DATA_RETENTION = false;
+        vi.mocked(env).ECONOMY_LLM_PROVIDER = undefined;
+        vi.mocked(env).ECONOMY_LLM_MODEL = undefined;
+        vi.mocked(env).CHAT_LLM_PROVIDER = undefined;
+        vi.mocked(env).CHAT_LLM_MODEL = undefined;
+      });
+
+      it("should force reasoning for gpt-6-luna without setting a reasoning effort", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+
+        const result = getModel(noKey);
+        expect(result.provider).toBe(Provider.OPEN_AI);
+        expect(result.modelName).toBe("gpt-6-luna");
+        expect(result.providerOptions?.openai).toEqual({
+          forceReasoning: true,
+        });
+        expect(result.providerOptions?.openai).not.toHaveProperty(
+          "reasoningEffort",
+        );
+      });
+
+      it("should not force reasoning for a non-gpt-6 OpenAI model", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-4o-mini";
+
+        const result = getModel(noKey);
+        expect(result.providerOptions?.openai).toBeUndefined();
+      });
+
+      it("should not set OpenAI options on the gpt-5.1 fallback when DEFAULT_LLM_MODEL is unset", () => {
+        const result = getModel(noKey);
+        expect(result.modelName).toBe("gpt-5.1");
+        expect(result.providerOptions?.openai).toBeUndefined();
+      });
+
+      it("should keep forceReasoning when zero data retention adds store: false", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+        vi.mocked(env).OPENAI_ZERO_DATA_RETENTION = true;
+
+        const result = getModel(noKey);
+        expect(result.providerOptions?.openai).toEqual({
+          forceReasoning: true,
+          store: false,
+        });
+      });
+
+      it("should leave users with their own API key unaffected", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+
+        const result = getModel({
+          aiApiKey: "user-api-key",
+          aiProvider: Provider.OPEN_AI,
+          aiModel: "gpt-6-luna",
+        });
+        expect(result.modelName).toBe("gpt-6-luna");
+        expect(result.providerOptions?.openai).toBeUndefined();
+      });
+
+      it("should not add OpenAI options when the default provider is not OpenAI", () => {
+        vi.mocked(env).DEFAULT_LLM_PROVIDER = "anthropic";
+        vi.mocked(env).DEFAULT_LLM_MODEL = "claude-sonnet-4-5-20250929";
+
+        const result = getModel(noKey);
+        expect(result.provider).toBe(Provider.ANTHROPIC);
+        expect(result.providerOptions?.openai).toBeUndefined();
+      });
+
+      it("should apply the same options to economy and chat when their env pairs are unset", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+
+        for (const modelType of ["economy", "chat"] as const) {
+          const result = getModel(noKey, modelType);
+          expect(result.modelName).toBe("gpt-6-luna");
+          expect(result.providerOptions?.openai).toEqual({
+            forceReasoning: true,
+          });
+        }
+      });
+    });
+
+    describe("withHighReasoningEffort", () => {
+      const noKey: UserAIFields = {
+        aiApiKey: null,
+        aiProvider: null,
+        aiModel: null,
+      };
+
+      beforeEach(() => {
+        vi.mocked(env).OPENAI_ZERO_DATA_RETENTION = false;
+      });
+
+      it("should add high effort and keep forceReasoning for gpt-6-luna", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+
+        const result = withHighReasoningEffort(getModel(noKey));
+        expect(result.modelName).toBe("gpt-6-luna");
+        expect(result.providerOptions?.openai).toEqual({
+          reasoningEffort: "high",
+          forceReasoning: true,
+        });
+      });
+
+      it("should keep store: false from zero data retention", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+        vi.mocked(env).OPENAI_ZERO_DATA_RETENTION = true;
+
+        const result = withHighReasoningEffort(getModel(noKey));
+        expect(result.providerOptions?.openai).toEqual({
+          reasoningEffort: "high",
+          forceReasoning: true,
+          store: false,
+        });
+      });
+
+      it("should add only high effort for an OpenAI model that has no other options", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-4o-mini";
+
+        const result = withHighReasoningEffort(getModel(noKey));
+        expect(result.providerOptions?.openai).toEqual({
+          reasoningEffort: "high",
+        });
+      });
+
+      it("should not mutate the options it is given", () => {
+        vi.mocked(env).DEFAULT_LLM_MODEL = "gpt-6-luna";
+        const base = getModel(noKey);
+
+        withHighReasoningEffort(base);
+        expect(base.providerOptions?.openai).toEqual({ forceReasoning: true });
+      });
+
+      it("should return non-OpenAI options unchanged", () => {
+        vi.mocked(env).DEFAULT_LLM_PROVIDER = "anthropic";
+        vi.mocked(env).DEFAULT_LLM_MODEL = "claude-sonnet-4-5-20250929";
+        const base = getModel(noKey);
+
+        const result = withHighReasoningEffort(base);
+        expect(result).toBe(base);
+        expect(result.providerOptions?.openai).toBeUndefined();
+      });
     });
   });
 });

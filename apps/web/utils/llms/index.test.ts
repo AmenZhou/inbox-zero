@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { generateObject, generateText } from "ai";
+import { z } from "zod";
+import { createGenerateObject, createGenerateText } from "@/utils/llms";
 import { isTransientNetworkError, withNetworkRetry } from "./retry";
+import { getModel, withHighReasoningEffort } from "./model";
 
 vi.mock("server-only", () => ({}));
 
@@ -7,6 +11,38 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/utils/sleep", () => ({
   sleep: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock("ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("ai")>();
+  return { ...actual, generateObject: vi.fn(), generateText: vi.fn() };
+});
+vi.mock("@/utils/usage", () => ({ saveAiUsage: vi.fn() }));
+vi.mock("@/utils/error-messages", () => ({
+  addUserErrorMessageWithNotification: vi.fn(),
+  ErrorType: {},
+}));
+vi.mock("@ai-sdk/openai", () => ({
+  createOpenAI: vi.fn(() => (model: string) => ({ modelId: model })),
+}));
+vi.mock("@/env", () => ({
+  env: {
+    DEFAULT_LLM_PROVIDER: "openai",
+    DEFAULT_LLM_MODEL: "gpt-6-luna",
+    OPENAI_API_KEY: "test-openai-key",
+  },
+}));
+
+const emailAccount = {
+  id: "email-account-1",
+  userId: "user-1",
+  email: "user@example.com",
+};
+const noKey = { aiApiKey: null, aiProvider: null, aiModel: null };
+const expectedHighEffortOptions = {
+  reasoningEffort: "high",
+  forceReasoning: true,
+};
+const schema = z.object({ ok: z.boolean() });
 
 describe("isTransientNetworkError", () => {
   it("should return true for ECONNRESET error", () => {
@@ -196,5 +232,123 @@ describe("withNetworkRetry", () => {
     expect(sleep).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenNthCalledWith(1, 1000); // 1s
     expect(sleep).toHaveBeenNthCalledWith(2, 2000); // 2s
+  });
+});
+
+describe("LLM wrappers forward the model's provider options", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("createGenerateObject adds no reasoning effort for the default model options", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { ok: true },
+    } as never);
+    const modelOptions = getModel(noKey);
+    const generate = createGenerateObject({
+      emailAccount,
+      label: "test",
+      modelOptions,
+    });
+
+    await generate({
+      model: modelOptions.model,
+      system: "Respond in JSON",
+      prompt: "ping",
+      schema,
+    });
+
+    expect(vi.mocked(generateObject).mock.calls[0][0].providerOptions).toEqual({
+      openai: { forceReasoning: true },
+    });
+  });
+
+  it("createGenerateObject passes the high-effort OpenAI options to the SDK call", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { ok: true },
+    } as never);
+    const modelOptions = withHighReasoningEffort(getModel(noKey));
+    const generate = createGenerateObject({
+      emailAccount,
+      label: "test",
+      modelOptions,
+    });
+
+    await generate({
+      model: modelOptions.model,
+      system: "Respond in JSON",
+      prompt: "ping",
+      schema,
+    });
+
+    expect(generateObject).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateObject).mock.calls[0][0].providerOptions).toEqual({
+      openai: expectedHighEffortOptions,
+    });
+  });
+
+  it("createGenerateText passes the high-effort OpenAI options to the SDK call", async () => {
+    vi.mocked(generateText).mockResolvedValue({ text: "pong" } as never);
+    const modelOptions = withHighReasoningEffort(getModel(noKey));
+    const generate = createGenerateText({
+      emailAccount,
+      label: "test",
+      modelOptions,
+    });
+
+    await generate({ model: modelOptions.model, prompt: "ping" });
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(generateText).mock.calls[0][0].providerOptions).toEqual({
+      openai: expectedHighEffortOptions,
+    });
+  });
+
+  it("keeps the openai options when a call adds options for another provider", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { ok: true },
+    } as never);
+    const modelOptions = withHighReasoningEffort(getModel(noKey));
+    const generate = createGenerateObject({
+      emailAccount,
+      label: "test",
+      modelOptions,
+    });
+
+    await generate({
+      model: modelOptions.model,
+      system: "Respond in JSON",
+      prompt: "ping",
+      schema,
+      providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } },
+    });
+
+    expect(vi.mocked(generateObject).mock.calls[0][0].providerOptions).toEqual({
+      openai: expectedHighEffortOptions,
+      anthropic: { cacheControl: { type: "ephemeral" } },
+    });
+  });
+
+  it("is idempotent for call sites that spread modelOptions into the call", async () => {
+    vi.mocked(generateObject).mockResolvedValue({
+      object: { ok: true },
+    } as never);
+    const modelOptions = withHighReasoningEffort(getModel(noKey));
+    const generate = createGenerateObject({
+      emailAccount,
+      label: "test",
+      modelOptions,
+    });
+
+    await generate({
+      ...modelOptions,
+      system: "Respond in JSON",
+      prompt: "ping",
+      schema,
+    });
+
+    expect(vi.mocked(generateObject).mock.calls[0][0].providerOptions).toEqual({
+      openai: expectedHighEffortOptions,
+    });
   });
 });

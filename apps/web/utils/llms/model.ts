@@ -46,6 +46,29 @@ export function getModel(
   return { ...data, hasUserApiKey: !!userAi.aiApiKey };
 }
 
+/**
+ * Opt a call in to high reasoning effort (OpenAI only; other providers are returned as is).
+ * Deep-merges into the model's own `openai` options: the LLM wrappers merge per-call
+ * `providerOptions` shallowly per provider key, so a bare `{ openai: { reasoningEffort } }`
+ * would drop `forceReasoning` and `store`.
+ */
+export function withHighReasoningEffort<T extends SelectModel>(
+  modelOptions: T,
+): T {
+  if (modelOptions.provider !== Provider.OPEN_AI) return modelOptions;
+
+  return {
+    ...modelOptions,
+    providerOptions: {
+      ...modelOptions.providerOptions,
+      openai: {
+        ...modelOptions.providerOptions?.openai,
+        reasoningEffort: "high",
+      },
+    },
+  };
+}
+
 function selectModelByType(
   userAi: UserAIFields,
   modelType: ModelType,
@@ -343,6 +366,12 @@ function selectDefaultModel(
   } else {
     aiProvider = env.DEFAULT_LLM_PROVIDER;
     aiModel = env.DEFAULT_LLM_MODEL || null;
+
+    // @ai-sdk/openai 3.0.26 only treats o*/gpt-5* ids as reasoning models and
+    // silently drops reasoningEffort for gpt-6-*. Not needed from 3.0.124 on.
+    if (aiProvider === Provider.OPEN_AI && aiModel?.startsWith("gpt-6")) {
+      providerOptions.openai = { forceReasoning: true };
+    }
   }
 
   if (aiProvider === Provider.OPENROUTER) {

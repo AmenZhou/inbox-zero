@@ -4,7 +4,7 @@ import { createGenerateObject } from "@/utils/llms/index";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { EmailForLLM } from "@/utils/types";
 import { getEmailListPrompt, getTodayForLLM } from "@/utils/ai/helpers";
-import { getModel } from "@/utils/llms/model";
+import { getModel, withHighReasoningEffort } from "@/utils/llms/model";
 import type { ReplyContextCollectorResult } from "@/utils/ai/reply/reply-context-collector";
 import type { CalendarAvailabilityContext } from "@/utils/ai/calendar/availability";
 import {
@@ -231,7 +231,7 @@ export async function aiDraftReply({
     meetingContext,
   });
 
-  const modelOptions = getModel(emailAccount.user);
+  const modelOptions = withHighReasoningEffort(getModel(emailAccount.user));
 
   const generateObject = createGenerateObject({
     emailAccount,

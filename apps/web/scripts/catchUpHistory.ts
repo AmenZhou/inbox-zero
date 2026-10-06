@@ -1,4 +1,5 @@
-// Run with: cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/catchUpHistory.ts [email] [--send-summary]
+// Run with: cd apps/web && NODE_ENV=production npx tsx -r ./scripts/stub-server-only.cjs scripts/catchUpHistory.ts [email] [--send-summary | --summary-only]
+// --summary-only: send the daily digest for <email> and exit; no Gmail history catch-up, so no rule runs and nothing is labelled, archived or drafted.
 
 import "dotenv/config";
 import prisma from "@/utils/prisma";
@@ -156,11 +157,31 @@ function isHistoryIdExpiredError(error: unknown): boolean {
 }
 
 async function main() {
+  const unknownFlags = process.argv
+    .slice(2)
+    .filter(
+      (a) =>
+        a.startsWith("--") && a !== "--send-summary" && a !== "--summary-only",
+    );
+  if (unknownFlags.length) {
+    throw new Error(`Unknown flag(s): ${unknownFlags.join(" ")}`);
+  }
+
+  const summaryOnly = process.argv.includes("--summary-only");
   const sendSummary = process.argv.includes("--send-summary");
   const emailFilter =
     process.argv.find(
       (a, i) => i >= 2 && !a.startsWith("--") && a !== process.argv[1],
     ) || null;
+
+  if (summaryOnly) {
+    if (!emailFilter) throw new Error("--summary-only requires an email");
+    logger.info("Sending daily summary only (no catch-up)", {
+      email: emailFilter,
+    });
+    await sendDailySummary(emailFilter);
+    return;
+  }
 
   const whereClause = {
     lastSyncedHistoryId: { not: null as string | null },

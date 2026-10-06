@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-10-06
+
+### Added
+
+- **Digest-only mode and a dedicated digest script**
+  - `scripts/daily-digest.sh <email> [--hours=<n>]` runs only `apps/web/scripts/dailySummary.ts`, so it can never run the Gmail history catch-up (labels, archive, drafts); it exits 1 with a usage line unless given exactly an email and optionally `--hours=<n>`. Point the launchd job at this script: if the file is missing (code reverted or another branch checked out) the job fails visibly instead of falling back to a catch-up
+  - `catchUpHistory.ts` and `scripts/catch-up-history.sh` accept `--summary-only`: send the digest for the given email and exit before any catch-up work (no rule runs, `lastSyncedHistoryId` untouched). It needs an email and cannot be combined with `--remote`
+  - Both the wrapper and `catchUpHistory.ts` now reject unknown `--` flags (exit 1), so a mistyped flag can no longer silently run the full catch-up
+- **Rule tags on each digest item** (`utils/ai/digest/digest-tags.ts`, `summarize-email-for-digest.ts`, `scripts/dailySummary.ts`)
+  - Each digest item shows chips for the Gmail labels of the account's enabled labelling rules that apply to it. Rules without instructions (e.g. Tianguo Band) are matched in code with the rules engine's matcher; rules with instructions are passed to the same single summary call as `tagCandidates`, and the returned names are validated against the real labels. Conversation trackers and the Cold Email blocker are skipped
+  - No extra LLM call per email (about +1,090 input tokens, roughly +$0.00015 per email); items keep their received order; the "+N more" notice also lists the tags of the omitted items
+
+### Changed
+
+- **Digest watermark and window** (`scripts/dailySummary.ts`)
+  - `lastDigestSentAt` is now the time the window was read, not the time the send finished, so mail arriving while summaries run lands in the next digest; the query excludes the previous `Daily Inbox Digest` email
+  - A summary the model answers with the literal `null` (spam/promotional) is shown as "(Promotional or not relevant, no summary.)"
+  - `SUMMARY_CONCURRENCY` goes from 4 to 3 because the tag list roughly doubles the tokens per call (200K tokens/min account limit)
+  - No new env var and no dependency change
+
 ## 2026-10-05
 
 ### Added

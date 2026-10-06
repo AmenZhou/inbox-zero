@@ -6,13 +6,19 @@ import prisma from "@/utils/prisma";
 import { getGmailClientWithRefresh } from "@/utils/gmail/client";
 import { queryBatchMessagesPages } from "@/utils/gmail/message";
 import { aiSummarizeEmailForDigest } from "@/utils/ai/digest/summarize-email-for-digest";
+import { getDigestTagCandidates } from "@/utils/ai/digest/digest-tags";
 import { extractNameFromEmail } from "@/utils/email";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
 import { createScopedLogger } from "@/utils/logger";
 
 const logger = createScopedLogger("daily-summary");
 
-type DigestItem = { from: string; subject: string; content: string };
+type DigestItem = {
+  from: string;
+  subject: string;
+  content: string;
+  tags: string[];
+};
 
 // Fallback window used on first run / when the account has no `lastDigestSentAt`
 // watermark yet (R-1 decision: docs/catch-up-summary-window.md).
@@ -36,11 +42,15 @@ const MAX_DIGEST_MESSAGES = 1000;
 // the email always sends and the truncation is observable (CU-2).
 const MAX_DIGEST_ITEMS_PER_EMAIL = 200;
 
-// Max concurrent per-email summaries. A call takes ~2-5 s at the model's default reasoning effort,
-// so 4 in flight is ~50-120 requests/min against the account's 500 RPM / 200K TPM
+// Max concurrent per-email summaries. A call takes ~2-5 s at the model's default reasoning effort
+// and, with the tag list in the prompt, ~2.3K tokens, so 3 in flight is ~35-90 requests/min =
+// ~80-210K tokens/min worst case (typically ~160K) against the account's 500 RPM / 200K TPM
 // limit (tokens, not requests, are the binding limit). The unbounded Promise.all
 // this replaced fired the whole backlog (up to MAX_DIGEST_MESSAGES) at once.
-const SUMMARY_CONCURRENCY = 4;
+const SUMMARY_CONCURRENCY = 3;
+
+// The summariser prompt tells the model to answer "null" for spam/promotional mail; never show that raw word.
+const NO_SUMMARY = /^\s*null\s*$/i;
 
 /**
  * Send the daily catch-up digest.
@@ -67,6 +77,7 @@ export async function sendDailySummary(email: string, hours?: number) {
       timezone: true,
       calendarBookingLink: true,
       lastDigestSentAt: true,
+      rules: { where: { enabled: true }, include: { actions: true } },
       user: {
         select: {
           name: true,
@@ -113,8 +124,12 @@ export async function sendDailySummary(email: string, hours?: number) {
   // - Automatic catch-up (no `--hours`): everything since the last successful digest
   //   (`after:<lastDigestSentAt>`), falling back to FALLBACK_HOURS on first run / null.
   const isManualOverride = hours !== undefined;
+  // The next watermark is the moment the window was read, not the moment the send finished:
+  // mail that arrives while the summaries are generated and sent then falls into the next digest.
+  const windowEnd = new Date();
+  // -subject excludes the previous digest e-mail itself (sent to this inbox), which the earlier watermark used to skip by timing alone.
   const exclusions =
-    "-label:Marketing -label:Newsletter -label:Receipt -category:promotions";
+    '-label:Marketing -label:Newsletter -label:Receipt -category:promotions -subject:"Daily Inbox Digest"';
 
   let query: string;
   if (isManualOverride) {
@@ -216,6 +231,11 @@ export async function sendDailySummary(email: string, hours?: number) {
         const from = extractNameFromEmail(message.headers.from);
         const subject = message.headers.subject;
         const emailForLLM = getEmailForLLM(message);
+        const { staticTags, aiCandidates } = getDigestTagCandidates({
+          rules: emailAccount.rules,
+          message,
+          logger: summaryLogger,
+        });
 
         const fallbackItem = (reason: string): DigestItem => {
           summaryLogger.warn(
@@ -233,6 +253,7 @@ export async function sendDailySummary(email: string, hours?: number) {
             subject,
             content:
               "(Summary unavailable — this email could not be summarized.)",
+            tags: staticTags,
           };
         };
 
@@ -243,6 +264,7 @@ export async function sendDailySummary(email: string, hours?: number) {
               ruleName: "Daily Digest",
               emailAccount: emailAccountWithAI,
               messageToSummarize: emailForLLM,
+              tagCandidates: aiCandidates,
             });
 
             // A null result is a definitive "no summary" — retrying will not help,
@@ -252,7 +274,14 @@ export async function sendDailySummary(email: string, hours?: number) {
             }
 
             summarizedCount++;
-            return { from, subject, content: summary.content };
+            return {
+              from,
+              subject,
+              content: NO_SUMMARY.test(summary.content)
+                ? "(Promotional or not relevant, no summary.)"
+                : summary.content,
+              tags: [...new Set([...staticTags, ...(summary.tags ?? [])])],
+            };
           } catch (error) {
             lastError = error;
             if (attempt < SUMMARY_RETRIES) {
@@ -317,7 +346,8 @@ export async function sendDailySummary(email: string, hours?: number) {
   // visible "+N more" notice — the send always succeeds and the truncation is
   // observable (CU-2). This is independent of the fetch-side MAX_DIGEST_MESSAGES.
   const renderedItems = digestItems.slice(0, MAX_DIGEST_ITEMS_PER_EMAIL);
-  const omittedItemCount = digestItems.length - renderedItems.length;
+  const omittedItems = digestItems.slice(MAX_DIGEST_ITEMS_PER_EMAIL);
+  const omittedItemCount = omittedItems.length;
 
   if (omittedItemCount > 0) {
     summaryLogger.warn(
@@ -333,7 +363,7 @@ export async function sendDailySummary(email: string, hours?: number) {
 
   const date = new Date();
   const subject = `Daily Inbox Digest - ${date.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}`;
-  const html = buildDigestHtml(renderedItems, date, omittedItemCount);
+  const html = buildDigestHtml(renderedItems, date, omittedItems);
   const raw = buildRawMessage({ to: email, from: email, subject, html });
 
   await gmail.users.messages.send({
@@ -353,7 +383,7 @@ export async function sendDailySummary(email: string, hours?: number) {
   if (!isManualOverride) {
     await prisma.emailAccount.update({
       where: { id: emailAccount.id },
-      data: { lastDigestSentAt: new Date() },
+      data: { lastDigestSentAt: windowEnd },
     });
     summaryLogger.info("Advanced lastDigestSentAt watermark");
   }
@@ -404,8 +434,9 @@ function escapeHtml(str: string): string {
 function buildDigestHtml(
   items: DigestItem[],
   date: Date,
-  omittedItemCount = 0,
+  omittedItems: DigestItem[] = [],
 ): string {
+  const omittedItemCount = omittedItems.length;
   const dateStr = date.toLocaleDateString("en-US", {
     weekday: "long",
     year: "numeric",
@@ -419,19 +450,29 @@ function buildDigestHtml(
     <tr>
       <td style="padding:14px 0;border-bottom:1px solid #e5e7eb;">
         <div style="font-weight:600;color:#111;font-size:15px;">${escapeHtml(item.subject)}</div>
-        <div style="color:#6b7280;font-size:13px;margin:2px 0 8px;">${escapeHtml(item.from)}</div>
+        <div style="color:#6b7280;font-size:13px;margin:2px 0 8px;">${escapeHtml(item.from)}</div>${buildTagChips(item.tags)}
         <div style="color:#374151;font-size:14px;white-space:pre-line;">${escapeHtml(item.content)}</div>
       </td>
     </tr>`,
     )
     .join("");
 
+  // The notice says which tags the hidden emails carry, so an Urgent one is never silently cut.
+  const omittedTagCounts = new Map<string, number>();
+  for (const tag of omittedItems.flatMap((item) => item.tags)) {
+    omittedTagCounts.set(tag, (omittedTagCounts.get(tag) ?? 0) + 1);
+  }
+  const omittedTagNote = omittedTagCounts.size
+    ? ` Among them: ${[...omittedTagCounts].map(([tag, n]) => `${escapeHtml(tag)} ${n}`).join(", ")}.`
+    : "";
+
   const moreNotice =
     omittedItemCount > 0
-      ? `<p style="margin:16px 0 0;color:#6b7280;font-size:13px;font-style:italic;">+${omittedItemCount} more email${omittedItemCount === 1 ? "" : "s"} not shown (digest truncated to keep this email a sendable size).</p>`
+      ? `<p style="margin:16px 0 0;color:#6b7280;font-size:13px;font-style:italic;">+${omittedItemCount} more email${omittedItemCount === 1 ? "" : "s"} not shown (digest truncated to keep this email a sendable size).${omittedTagNote}</p>`
       : "";
 
-  const countLabel = omittedItemCount > 0 ? items.length + omittedItemCount : items.length;
+  const countLabel =
+    omittedItemCount > 0 ? items.length + omittedItemCount : items.length;
 
   return `<!DOCTYPE html>
 <html>
@@ -442,6 +483,17 @@ function buildDigestHtml(
   ${moreNotice}
 </body>
 </html>`;
+}
+
+function buildTagChips(tags: string[]): string {
+  if (!tags.length) return "";
+  const chips = tags
+    .map(
+      (tag) =>
+        `<span style="display:inline-block;margin:0 6px 4px 0;padding:1px 8px;border-radius:10px;background:#eef2ff;color:#3730a3;font-size:12px;font-weight:600;">${escapeHtml(tag)}</span>`,
+    )
+    .join("");
+  return `<div style="margin:0 0 6px;">${chips}</div>`;
 }
 
 function buildRawMessage({

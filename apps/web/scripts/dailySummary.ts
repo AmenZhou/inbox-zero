@@ -49,6 +49,24 @@ const MAX_DIGEST_ITEMS_PER_EMAIL = 200;
 // this replaced fired the whole backlog (up to MAX_DIGEST_MESSAGES) at once.
 const SUMMARY_CONCURRENCY = 3;
 
+// The digest is grouped by tag. An email with several tags is shown ONCE, under the first of its tags in
+// this list; its other tags stay as chips. Groups appear in this order. Tags not in the list (a new rule)
+// come after it, alphabetically, and emails with no tag come last under "Untagged". Keep this list in sync
+// with the account's labelling rules (names are the rules' LABEL action labels).
+const TAG_PRIORITY = [
+  "Urgent",
+  "Tianguo Band",
+  "Recruiters",
+  "need an action",
+  "To Reply",
+  "Dev",
+  "FYI",
+  "Social",
+  "Newsletter",
+  "Receipt",
+  "Marketing",
+];
+
 // The summariser prompt tells the model to answer "null" for spam/promotional mail; never show that raw word.
 const NO_SUMMARY = /^\s*null\s*$/i;
 
@@ -444,16 +462,23 @@ function buildDigestHtml(
     day: "numeric",
   });
 
-  const rows = items
-    .map(
-      (item) => `
+  const renderRow = (item: DigestItem, groupTag: string | null) => `
     <tr>
       <td style="padding:14px 0;border-bottom:1px solid #e5e7eb;">
         <div style="font-weight:600;color:#111;font-size:15px;">${escapeHtml(item.subject)}</div>
-        <div style="color:#6b7280;font-size:13px;margin:2px 0 8px;">${escapeHtml(item.from)}</div>${buildTagChips(item.tags)}
+        <div style="color:#6b7280;font-size:13px;margin:2px 0 8px;">${escapeHtml(item.from)}</div>${buildTagChips(item.tags.filter((tag) => tag !== groupTag))}
         <div style="color:#374151;font-size:14px;white-space:pre-line;">${escapeHtml(item.content)}</div>
       </td>
-    </tr>`,
+    </tr>`;
+
+  const groups = groupByPrimaryTag(items);
+  // With no tags at all there is nothing to group by: render the plain list, as before grouping existed.
+  const showHeaders = !(groups.length === 1 && groups[0].tag === null);
+  const body = groups
+    .map(
+      ({ tag, items: groupItems }) =>
+        `${showHeaders ? `\n  <h3 style="margin:22px 0 0;padding-bottom:4px;border-bottom:2px solid #c7d2fe;color:#3730a3;font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;">${escapeHtml(tag ?? "Untagged")} (${groupItems.length})</h3>` : ""}
+  <table style="width:100%;border-collapse:collapse;">${groupItems.map((item) => renderRow(item, tag)).join("")}</table>`,
     )
     .join("");
 
@@ -479,10 +504,41 @@ function buildDigestHtml(
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:620px;margin:0 auto;padding:24px;color:#111;">
   <h2 style="margin:0 0 4px;font-size:20px;">Daily Inbox Digest</h2>
   <p style="margin:0 0 20px;color:#6b7280;font-size:14px;">${escapeHtml(dateStr)} - ${countLabel} email${countLabel === 1 ? "" : "s"}</p>
-  <table style="width:100%;border-collapse:collapse;">${rows}</table>
+  ${body}
   ${moreNotice}
 </body>
 </html>`;
+}
+
+/**
+ * Groups items by their highest-priority tag (TAG_PRIORITY, then unlisted tags in item order). Each item lands
+ * in exactly one group and keeps its received order inside it. Groups: priority order, unlisted tags
+ * alphabetically, then the untagged items (tag === null). Empty groups do not exist.
+ */
+function groupByPrimaryTag(
+  items: DigestItem[],
+): { tag: string | null; items: DigestItem[] }[] {
+  const rank = (tag: string) => {
+    const i = TAG_PRIORITY.indexOf(tag);
+    return i === -1 ? TAG_PRIORITY.length : i;
+  };
+  const groups = new Map<string | null, DigestItem[]>();
+  for (const item of items) {
+    let primary: string | null = null;
+    for (const tag of item.tags) {
+      if (primary === null || rank(tag) < rank(primary)) primary = tag;
+    }
+    const group = groups.get(primary);
+    if (group) group.push(item);
+    else groups.set(primary, [item]);
+  }
+  return [...groups]
+    .map(([tag, groupItems]) => ({ tag, items: groupItems }))
+    .sort((a, b) => {
+      if (a.tag === null || b.tag === null)
+        return (a.tag === null ? 1 : 0) - (b.tag === null ? 1 : 0);
+      return rank(a.tag) - rank(b.tag) || a.tag.localeCompare(b.tag);
+    });
 }
 
 function buildTagChips(tags: string[]): string {

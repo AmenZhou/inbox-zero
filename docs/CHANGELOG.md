@@ -11,6 +11,11 @@
 - **Rule tags on each digest item** (`utils/ai/digest/digest-tags.ts`, `summarize-email-for-digest.ts`, `scripts/dailySummary.ts`)
   - Each digest item shows chips for the Gmail labels of the account's enabled labelling rules that apply to it. Rules without instructions (e.g. Tianguo Band) are matched in code with the rules engine's matcher; rules with instructions are passed to the same single summary call as `tagCandidates`, and the returned names are validated against the real labels. Conversation trackers and the Cold Email blocker are skipped
   - No extra LLM call per email (about +1,090 input tokens, roughly +$0.00015 per email); items keep their received order; the "+N more" notice also lists the tags of the omitted items
+- **Digest grouped by tag** (`scripts/dailySummary.ts`)
+  - The emails in the Daily Inbox Digest are now grouped under a header per tag (`Urgent (3)`), in a fixed order: Urgent, Tianguo Band, Recruiters, need an action, To Reply, Dev, FYI, Social, Newsletter, Receipt, Marketing, then any other tag A-Z, then Untagged. An email with several tags appears once, under its highest-priority tag; its other tags stay as chips. Inside a group the received order is kept; empty groups are not shown; with no tags at all the digest is a plain list as before
+  - The 200-item cap still applies to the received-order list before grouping, so the same emails are hidden and the "+N more" notice still names the hidden tags; fallback ("Summary unavailable") entries are grouped by their static tags, else under Untagged
+  - A new labelling rule appears as its own group after the listed ones until its label is added to `TAG_PRIORITY`
+  - No new LLM call, token or dollar impact (rendering only); no schema, env or dependency change. The 200-item digest is about 26 KB smaller than with a chip per tag
 
 ### Changed
 

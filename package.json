@@ -35,7 +35,7 @@
   "packageManager": "pnpm@10.29.2",
   "lint-staged": {
     "*.{js,jsx,ts,tsx,json,jsonc,css,scss,md,mdx}": [
-      "ultracite fix"
+      "biome check --write --no-errors-on-unmatched --files-ignore-unknown=true"
     ]
   },
   "engines": {

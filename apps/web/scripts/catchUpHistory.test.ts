@@ -32,7 +32,19 @@ vi.mock("@/utils/logger", () => {
 const originalArgv = process.argv;
 
 async function runScript(...args: string[]) {
+  return runScriptWith(undefined, ...args);
+}
+
+/** `summaryStatus` is what the mocked sendDailySummary resolves to (undefined = the default mock). */
+async function runScriptWith(
+  summaryStatus: string | undefined,
+  ...args: string[]
+) {
   vi.resetModules();
+  if (summaryStatus)
+    vi.mocked(
+      (await import("./dailySummary")).sendDailySummary,
+    ).mockResolvedValueOnce(summaryStatus as never);
   process.argv = ["node", "scripts/catchUpHistory.ts", ...args];
   const prisma = (await import("@/utils/prisma")).default;
   vi.mocked(prisma.$disconnect).mockClear();
@@ -112,5 +124,30 @@ describe("catchUpHistory.ts", () => {
 
     expect(r.sendDailySummary).toHaveBeenCalledWith("me@example.com");
     expect(r.prisma.emailAccount.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("--summary-only exits non-zero when the digest ends in 'error'", async () => {
+    const r = await runScriptWith("error", "me@example.com", "--summary-only");
+
+    expect(r.sendDailySummary).toHaveBeenCalledTimes(1);
+    expect(r.prisma.emailAccount.findMany).not.toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it.each([
+    "sent",
+    "skipped",
+  ])("--summary-only exits 0 when the digest is '%s'", async (status) => {
+    await runScriptWith(status, "me@example.com", "--summary-only");
+
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it("--send-summary still continues to the catch-up when the digest ends in 'error'", async () => {
+    const r = await runScriptWith("error", "me@example.com", "--send-summary");
+
+    expect(r.sendDailySummary).toHaveBeenCalledTimes(1);
+    expect(r.prisma.emailAccount.findMany).toHaveBeenCalledTimes(1);
+    expect(process.exit).not.toHaveBeenCalled();
   });
 });

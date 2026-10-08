@@ -179,7 +179,9 @@ async function main() {
     logger.info("Sending daily summary only (no catch-up)", {
       email: emailFilter,
     });
-    await sendDailySummary(emailFilter);
+    if ((await sendDailySummary(emailFilter)) === "error") {
+      throw new Error("Daily summary failed (see the error logged above)");
+    }
     return;
   }
 

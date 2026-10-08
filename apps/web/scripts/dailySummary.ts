@@ -13,6 +13,8 @@ import { createScopedLogger } from "@/utils/logger";
 
 const logger = createScopedLogger("daily-summary");
 
+type DigestStatus = "sent" | "skipped" | "error";
+
 type DigestItem = {
   from: string;
   subject: string;
@@ -71,7 +73,8 @@ const TAG_PRIORITY = [
 const NO_SUMMARY = /^\s*null\s*$/i;
 
 /**
- * Send the daily catch-up digest.
+ * Send the daily catch-up digest. Resolves to 'sent', 'skipped' (nothing to send) or 'error' (account or
+ * tokens missing: logged, not thrown); a thrown error (e.g. a network failure) still rejects.
  *
  * @param email   the email account to summarize
  * @param hours   optional manual override. When provided, the window is a fixed
@@ -81,7 +84,10 @@ const NO_SUMMARY = /^\s*null\s*$/i;
  *                (`after:<lastDigestSentAt>`, falling back to 72h on first run) and
  *                advances `lastDigestSentAt` after a successful send.
  */
-export async function sendDailySummary(email: string, hours?: number) {
+export async function sendDailySummary(
+  email: string,
+  hours?: number,
+): Promise<DigestStatus> {
   const summaryLogger = logger.with({ email, hours });
 
   const emailAccount = await prisma.emailAccount.findUnique({
@@ -117,7 +123,7 @@ export async function sendDailySummary(email: string, hours?: number) {
 
   if (!emailAccount) {
     summaryLogger.error("Email account not found");
-    return;
+    return "error";
   }
 
   if (
@@ -125,7 +131,7 @@ export async function sendDailySummary(email: string, hours?: number) {
     !emailAccount.account?.refresh_token
   ) {
     summaryLogger.error("Missing Gmail tokens");
-    return;
+    return "error";
   }
 
   const gmail = await getGmailClientWithRefresh({
@@ -145,9 +151,10 @@ export async function sendDailySummary(email: string, hours?: number) {
   // The next watermark is the moment the window was read, not the moment the send finished:
   // mail that arrives while the summaries are generated and sent then falls into the next digest.
   const windowEnd = new Date();
-  // -subject excludes the previous digest e-mail itself (sent to this inbox), which the earlier watermark used to skip by timing alone.
+  // The last clause excludes the account's own earlier digest (sent to this inbox), which the earlier watermark used to
+  // skip by timing alone. It is limited to from:me so a foreign or forwarded mail with that subject is still digested.
   const exclusions =
-    '-label:Marketing -label:Newsletter -label:Receipt -category:promotions -subject:"Daily Inbox Digest"';
+    '-label:Marketing -label:Newsletter -label:Receipt -category:promotions -(from:me subject:"Daily Inbox Digest")';
 
   let query: string;
   if (isManualOverride) {
@@ -201,7 +208,7 @@ export async function sendDailySummary(email: string, hours?: number) {
 
   if (messages.length === 0) {
     summaryLogger.info("No messages to summarize, skipping digest");
-    return;
+    return "skipped";
   }
 
   // Filter to only emails not yet processed by the rules engine
@@ -222,7 +229,7 @@ export async function sendDailySummary(email: string, hours?: number) {
 
   if (unprocessedMessages.length === 0) {
     summaryLogger.info("No unprocessed messages, skipping digest");
-    return;
+    return "skipped";
   }
 
   const emailAccountWithAI = {
@@ -248,12 +255,8 @@ export async function sendDailySummary(email: string, hours?: number) {
       summaryQueue.add(async (): Promise<DigestItem> => {
         const from = extractNameFromEmail(message.headers.from);
         const subject = message.headers.subject;
-        const emailForLLM = getEmailForLLM(message);
-        const { staticTags, aiCandidates } = getDigestTagCandidates({
-          rules: emailAccount.rules,
-          message,
-          logger: summaryLogger,
-        });
+        // Static tags are kept on a fallback entry only if they could be computed.
+        let staticTags: string[] = [];
 
         const fallbackItem = (reason: string): DigestItem => {
           summaryLogger.warn(
@@ -274,6 +277,25 @@ export async function sendDailySummary(email: string, hours?: number) {
             tags: staticTags,
           };
         };
+
+        // Outside the retry loop (a retry cannot fix them), but inside this task: a throw here must become a
+        // fallback entry, not reject Promise.all and lose the whole digest.
+        let emailForLLM: ReturnType<typeof getEmailForLLM>;
+        let aiCandidates: ReturnType<
+          typeof getDigestTagCandidates
+        >["aiCandidates"];
+        try {
+          ({ staticTags, aiCandidates } = getDigestTagCandidates({
+            rules: emailAccount.rules,
+            message,
+            logger: summaryLogger,
+          }));
+          emailForLLM = getEmailForLLM(message);
+        } catch (error) {
+          return fallbackItem(
+            `preparing the email threw: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
 
         let lastError: unknown;
         for (let attempt = 0; attempt <= SUMMARY_RETRIES; attempt++) {
@@ -355,16 +377,19 @@ export async function sendDailySummary(email: string, hours?: number) {
 
   if (digestItems.length === 0) {
     summaryLogger.info("No summaries produced, skipping digest");
-    return;
+    return "skipped";
   }
 
   // Guard the rendered email against Gmail's send-size limit: a very large item
   // list can produce HTML big enough to fail the send outright. We truncate to
-  // MAX_DIGEST_ITEMS_PER_EMAIL and pass the omitted count so the email shows a
+  // MAX_DIGEST_ITEMS_PER_EMAIL and pass the omitted items so the email shows a
   // visible "+N more" notice — the send always succeeds and the truncation is
   // observable (CU-2). This is independent of the fetch-side MAX_DIGEST_MESSAGES.
-  const renderedItems = digestItems.slice(0, MAX_DIGEST_ITEMS_PER_EMAIL);
-  const omittedItems = digestItems.slice(MAX_DIGEST_ITEMS_PER_EMAIL);
+  // The cap is applied AFTER grouping: the emails kept are the highest-priority groups' (received order inside
+  // each group), so what gets hidden is the tail of the lowest-priority groups, ultimately Untagged.
+  const prioritized = groupByPrimaryTag(digestItems).flatMap((g) => g.items);
+  const renderedItems = prioritized.slice(0, MAX_DIGEST_ITEMS_PER_EMAIL);
+  const omittedItems = prioritized.slice(MAX_DIGEST_ITEMS_PER_EMAIL);
   const omittedItemCount = omittedItems.length;
 
   if (omittedItemCount > 0) {
@@ -405,6 +430,7 @@ export async function sendDailySummary(email: string, hours?: number) {
     });
     summaryLogger.info("Advanced lastDigestSentAt watermark");
   }
+  return "sent";
 }
 
 async function main() {
@@ -428,7 +454,10 @@ async function main() {
       )
     : undefined;
 
-  await sendDailySummary(emailArg, hours);
+  // 'error' (account or tokens missing) must not look like a success to launchd.
+  if ((await sendDailySummary(emailArg, hours)) === "error") {
+    process.exitCode = 1;
+  }
 }
 
 // Only run main() when executed directly, not when imported by another script

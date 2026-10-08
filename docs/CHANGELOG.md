@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-10-07
+
+### Changed
+
+- **Digest cap now applies after grouping (deliberate behaviour change)** (`scripts/dailySummary.ts`)
+  - Before, the 200-item cap cut the received-order list first, so an Urgent email at position 201 or later was hidden. Now the digest is grouped and ordered by tag priority first, then cut at 200: the highest-priority groups are kept whole, and what is hidden is the tail of the lowest-priority groups (ultimately Untagged), in received order within each group
+  - The "+N more" notice and its "Among them: ..." tag counts now describe the emails that are actually hidden (usually untagged or low-priority ones), so they are often shorter than before
+  - This supersedes the 2026-10-06 note that the cap applies to the received-order list before grouping
+- **Digest query excludes only the account's own digest** (`scripts/dailySummary.ts`)
+  - The exclusion `-subject:"Daily Inbox Digest"` is now `-(from:me subject:"Daily Inbox Digest")`, so a foreign or forwarded mail with that subject is still digested. Checked read-only against Gmail (message counts only): the grouped negation is honoured, the account's own digest is still excluded and the rest of the window is unchanged
+
+### Fixed
+
+- **A failed digest run no longer looks successful** (`scripts/dailySummary.ts`, `scripts/catchUpHistory.ts`)
+  - `sendDailySummary` now returns `'sent' | 'skipped' | 'error'`. "Email account not found" and "Missing Gmail tokens" (`'error'`) make `dailySummary.ts` (and so `scripts/daily-digest.sh`) and `catchUpHistory.ts --summary-only` exit non-zero. `--send-summary` is unchanged: it logs the error and continues with the catch-up
+- **One bad email can no longer lose the whole digest** (`scripts/dailySummary.ts`)
+  - `getDigestTagCandidates` and `getEmailForLLM` now run inside the per-email task: a throw gives that email a "Summary unavailable" item (with its static tags if they could be computed) instead of rejecting the whole batch
+- **The scheduled digest retries on a transient failure** (`scripts/daily-digest.sh`)
+  - The first scheduled run (2026-10-07 17:00) failed with `fetch failed` / `ConnectTimeoutError` before sending anything, most likely because the network was not up yet after wake. The script now makes up to 3 attempts with `DIGEST_RETRY_SLEEP` seconds between them (default 90), retrying only when an attempt failed and its output has no "Digest email sent" line (a retry after a send would duplicate the digest). The last attempt's exit code is returned and all output still goes to the log. Argument checking is unchanged and the catch-up code is still never reached
+  - The script no longer `exec`s npx (it has to loop); it stays executable
+  - New tests: `scripts/dailyDigestSh.test.ts` (stub `npx`), plus cases in `dailySummary.test.ts` and `catchUpHistory.test.ts`
+
 ## 2026-10-06
 
 ### Added

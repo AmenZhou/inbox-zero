@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aiSummarizeEmailForDigest } from "@/utils/ai/digest/summarize-email-for-digest";
 import { getDigestTagCandidates } from "@/utils/ai/digest/digest-tags";
+import { getEmailForLLM } from "@/utils/get-email-from-message";
 import { queryBatchMessagesPages } from "@/utils/gmail/message";
 import prisma from "@/utils/prisma";
 import { sendDailySummary } from "./dailySummary";
@@ -30,6 +31,7 @@ vi.mock("@/utils/prisma", () => ({
       update: vi.fn(),
     },
     executedRule: { findMany: vi.fn(async () => []) },
+    $disconnect: vi.fn(async () => {}),
   },
 }));
 vi.mock("@/utils/gmail/client", () => ({
@@ -45,7 +47,7 @@ vi.mock("@/utils/ai/digest/digest-tags", () => ({
   getDigestTagCandidates: vi.fn(() => ({ staticTags: [], aiCandidates: [] })),
 }));
 vi.mock("@/utils/get-email-from-message", () => ({
-  getEmailForLLM: (message: { id: string }) => ({ id: message.id }),
+  getEmailForLLM: vi.fn((message: { id: string }) => ({ id: message.id })),
 }));
 vi.mock("@/utils/logger", () => {
   const logger = {
@@ -59,6 +61,8 @@ vi.mock("@/utils/logger", () => {
 
 const summarize = vi.mocked(aiSummarizeEmailForDigest);
 const digestTags = vi.mocked(getDigestTagCandidates);
+const emailForLLM = vi.mocked(getEmailForLLM);
+const defaultEmailForLLM = (message: { id: string }) => ({ id: message.id });
 
 function messages(count: number) {
   return Array.from({ length: count }, (_, i) => ({
@@ -105,6 +109,7 @@ describe("sendDailySummary summarization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     digestTags.mockReturnValue({ staticTags: [], aiCandidates: [] });
+    emailForLLM.mockImplementation(defaultEmailForLLM as never);
   });
 
   it("runs at most 3 summaries at once and keeps message order", async () => {
@@ -197,12 +202,10 @@ describe("sendDailySummary summarization", () => {
     vi.mocked(queryBatchMessagesPages).mockResolvedValue(
       messages(203) as never,
     );
+    // 200 Urgent, then 3 FYI: the cap hides the lowest-priority tail, so the notice names FYI.
     summarize.mockImplementation(async ({ messageToSummarize }) => {
       const i = Number(messageToSummarize.id.slice(1));
-      return {
-        content: "x",
-        tags: i >= 201 ? ["Urgent"] : i === 200 ? ["Recruiters"] : [],
-      };
+      return { content: "x", tags: i < 200 ? ["Urgent"] : ["FYI"] };
     });
 
     await sendDailySummary("me@example.com");
@@ -210,7 +213,7 @@ describe("sendDailySummary summarization", () => {
     const { subjects, notice } = sentItems();
     expect(subjects).toHaveLength(200);
     expect(notice).toContain("+3 more emails not shown");
-    expect(notice).toContain("Among them: Recruiters 1, Urgent 2.");
+    expect(notice).toContain("Among them: FYI 3.");
   });
 
   it("moves the watermark to when the window was read, and leaves out its own earlier digest", async () => {
@@ -230,7 +233,9 @@ describe("sendDailySummary summarization", () => {
         expect.objectContaining({ data: { lastDigestSentAt: t0 } }),
       );
       const query = vi.mocked(queryBatchMessagesPages).mock.calls[0][1].query;
-      expect(query).toContain('-subject:"Daily Inbox Digest"');
+      // Only the account's own digest is excluded; a foreign mail with that subject is still digested.
+      expect(query).toContain('-(from:me subject:"Daily Inbox Digest")');
+      expect(query).not.toContain(' -subject:"Daily Inbox Digest"');
     } finally {
       vi.useRealTimers();
     }
@@ -396,27 +401,63 @@ describe("sendDailySummary grouping by tag", () => {
     );
   });
 
-  it("caps the received-order list first, then groups it; hidden emails stay listed by tag in the notice", async () => {
+  it("caps after grouping: an Urgent email at position 201+ is shown; the tail of the lowest-priority group is hidden", async () => {
     vi.mocked(queryBatchMessagesPages).mockResolvedValue(
-      messages(203) as never,
+      messages(205) as never,
     );
-    // The three hidden (oldest) emails are Urgent; the cap must not rescue them into the Urgent group.
+    // Received order: 0 Dev, 1-199 untagged, 200-204 Urgent (all past the old received-order cut at 200).
     tagSummaries({
       0: ["Dev"],
+      200: ["Urgent"],
       201: ["Urgent"],
       202: ["Urgent"],
-      200: ["Urgent"],
+      203: ["Urgent"],
+      204: ["Urgent"],
     });
 
     await sendDailySummary("me@example.com");
 
     const { groups, subjects, notice } = sentItems();
     expect(subjects).toHaveLength(200);
-    expect(subjects).not.toContain("Subject 200");
-    expect(groups.map((g) => g.header)).toEqual(["Dev (1)", "Untagged (199)"]);
-    expect(groups[1].subjects[0]).toBe("Subject 1");
+    expect(groups.map((g) => g.header)).toEqual([
+      "Urgent (5)",
+      "Dev (1)",
+      "Untagged (194)",
+    ]);
+    expect(groups[0].subjects).toEqual([
+      "Subject 200",
+      "Subject 201",
+      "Subject 202",
+      "Subject 203",
+      "Subject 204",
+    ]);
+    // Received order is kept inside the Untagged group; its last 5 (195-199) are what is hidden.
+    expect(groups[2].subjects[0]).toBe("Subject 1");
+    expect(groups[2].subjects.at(-1)).toBe("Subject 194");
+    expect(subjects).not.toContain("Subject 199");
+    expect(notice).toContain("+5 more emails not shown");
+    expect(notice).not.toContain("Among them"); // the hidden ones carry no tag
+  });
+
+  it("when the hidden emails carry tags, the notice lists those (not the shown ones)", async () => {
+    vi.mocked(queryBatchMessagesPages).mockResolvedValue(
+      messages(203) as never,
+    );
+    tagSummaries({
+      ...Object.fromEntries(
+        Array.from({ length: 200 }, (_, i) => [i, ["Urgent"]]),
+      ),
+      200: ["Social"],
+      201: ["Social", "Marketing"],
+      202: ["Marketing"],
+    });
+
+    await sendDailySummary("me@example.com");
+
+    const { groups, notice } = sentItems();
+    expect(groups.map((g) => g.header)).toEqual(["Urgent (200)"]);
     expect(notice).toContain("+3 more emails not shown");
-    expect(notice).toContain("Among them: Urgent 3.");
+    expect(notice).toContain("Among them: Social 2, Marketing 2.");
   });
 
   it("groups a fallback entry by its static tags, else under Untagged", async () => {
@@ -435,5 +476,142 @@ describe("sendDailySummary grouping by tag", () => {
       { header: "Tianguo Band (1)", subjects: ["Subject 1"] },
       { header: "Untagged (2)", subjects: ["Subject 0", "Subject 2"] },
     ]);
+  });
+});
+
+describe("sendDailySummary status and per-email failures", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    digestTags.mockReturnValue({ staticTags: [], aiCandidates: [] });
+    emailForLLM.mockImplementation(defaultEmailForLLM as never);
+  });
+
+  it("returns 'sent' after sending, 'skipped' when there is nothing to send", async () => {
+    vi.mocked(queryBatchMessagesPages).mockResolvedValue(messages(1) as never);
+    summarize.mockResolvedValue({ content: "ok", tags: [] });
+    expect(await sendDailySummary("me@example.com")).toBe("sent");
+    expect(send).toHaveBeenCalledTimes(1);
+
+    vi.mocked(queryBatchMessagesPages).mockResolvedValue([] as never);
+    expect(await sendDailySummary("me@example.com")).toBe("skipped");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 'error' for an unknown account and for missing Gmail tokens, sending nothing", async () => {
+    vi.mocked(prisma.emailAccount.findUnique).mockResolvedValueOnce(null);
+    expect(await sendDailySummary("nobody@example.com")).toBe("error");
+
+    vi.mocked(prisma.emailAccount.findUnique).mockResolvedValueOnce({
+      id: "account-1",
+      account: { access_token: null, refresh_token: "refresh" },
+    } as never);
+    expect(await sendDailySummary("me@example.com")).toBe("error");
+
+    expect(queryBatchMessagesPages).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("a throw while computing tags or the LLM input becomes a fallback item; the digest is still sent", async () => {
+    vi.mocked(queryBatchMessagesPages).mockResolvedValue(messages(4) as never);
+    digestTags.mockImplementation(({ message }) => {
+      if (message.id === "m1") throw new Error("tag boom");
+      return {
+        staticTags: message.id === "m2" ? ["Tianguo Band"] : [],
+        aiCandidates: [],
+      };
+    });
+    emailForLLM.mockImplementation(((message: { id: string }) => {
+      if (message.id === "m2") throw new Error("llm input boom");
+      return { id: message.id };
+    }) as never);
+    summarize.mockResolvedValue({ content: "ok", tags: [] });
+
+    expect(await sendDailySummary("me@example.com")).toBe("sent");
+
+    const { subjects, contents, groups } = sentItems();
+    expect(subjects).toHaveLength(4);
+    // m1: tags not computable -> Untagged; m2: static tags kept; neither reached the summariser.
+    expect(
+      contents.filter((c) => c.includes("Summary unavailable")),
+    ).toHaveLength(2);
+    expect(summarize.mock.calls.map(([a]) => a.messageToSummarize.id)).toEqual([
+      "m0",
+      "m3",
+    ]);
+    expect(groups).toEqual([
+      { header: "Tianguo Band (1)", subjects: ["Subject 2"] },
+      {
+        header: "Untagged (3)",
+        subjects: ["Subject 0", "Subject 1", "Subject 3"],
+      },
+    ]);
+  });
+});
+
+describe("dailySummary.ts as a script (main)", () => {
+  const originalArgv = process.argv;
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    emailForLLM.mockImplementation(defaultEmailForLLM as never);
+    vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    process.argv = originalArgv;
+    process.exitCode = originalExitCode;
+    vi.restoreAllMocks();
+  });
+
+  /** Runs main() the way node does (argv[1] ends with dailySummary.ts) on a fresh module copy. */
+  async function runMain(
+    arrange: (m: {
+      prisma: typeof prisma;
+      query: typeof queryBatchMessagesPages;
+    }) => void,
+  ) {
+    vi.resetModules();
+    process.argv = ["node", "scripts/dailySummary.ts", "me@example.com"];
+    process.exitCode = undefined;
+    const p = (await import("@/utils/prisma")).default;
+    vi.mocked(p.$disconnect).mockClear();
+    arrange({
+      prisma: p,
+      query: (await import("@/utils/gmail/message")).queryBatchMessagesPages,
+    });
+    await import("./dailySummary");
+    await vi.waitFor(() => {
+      if (!vi.mocked(p.$disconnect).mock.calls.length)
+        throw new Error("script still running");
+    });
+    const exitCode = process.exitCode;
+    process.exitCode = originalExitCode;
+    return exitCode;
+  }
+
+  it("exits non-zero when the account is not found", async () => {
+    const code = await runMain(({ prisma: p }) =>
+      vi.mocked(p.emailAccount.findUnique).mockResolvedValueOnce(null),
+    );
+    expect(code).toBe(1);
+  });
+
+  it("exits non-zero when the Gmail tokens are missing", async () => {
+    const code = await runMain(({ prisma: p }) =>
+      vi.mocked(p.emailAccount.findUnique).mockResolvedValueOnce({
+        id: "account-1",
+        account: { access_token: "a", refresh_token: null },
+      } as never),
+    );
+    expect(code).toBe(1);
+  });
+
+  it("exits 0 when there is nothing to send (skipped is not a failure)", async () => {
+    const code = await runMain(({ query }) =>
+      vi.mocked(query).mockResolvedValue([] as never),
+    );
+    expect(code).not.toBe(1);
+    expect(process.exit).not.toHaveBeenCalled();
   });
 });

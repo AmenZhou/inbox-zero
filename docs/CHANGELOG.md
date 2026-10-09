@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-10-09
+
+### Fixed
+
+- **A hung digest run no longer blocks the schedule** (`scripts/daily-digest.sh`)
+  - On 2026-10-08 the 17:00 run stalled for 19 hours on a Gmail socket that had died while the Mac slept. It never exited, so the retry never ran, and launchd would not start the next day's run while it was still "running". Each attempt now runs with a time limit (`DIGEST_ATTEMPT_TIMEOUT`, default 900 s): the attempt's whole process group is killed and the attempt counts as failed (exit 124), so the usual retry applies
+  - Attempts run under `caffeinate -i` (when available) so an idle Mac does not go back to sleep mid-run
+  - Tests in `apps/web/scripts/dailyDigestSh.test.ts` (timeout kills the child process, retry after a timeout, 124 when every attempt hangs, `caffeinate -i` wrapper)
+
 ## 2026-10-07
 
 ### Changed

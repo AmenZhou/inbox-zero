@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -13,11 +19,12 @@ const SCRIPT = path.resolve(
 const SENT = "[daily-summary]: Digest email sent {}";
 
 /**
- * Each plan entry is one `npx` call: the exit code, plus whether it prints the "Digest email sent" line first.
+ * Each plan entry is one `npx` call: the exit code, plus whether it prints the "Digest email sent" line first, or
+ * whether it hangs (a backgrounded `sleep 30` whose pid is recorded, so the test can prove the group was killed).
  * A call beyond the plan exits 99, so an unexpected extra attempt shows up in the exit code.
  */
 function run(
-  plan: { code: number; sent?: boolean }[],
+  plan: { code: number; sent?: boolean; hang?: boolean }[],
   args: string[] = ["me@example.com"],
   env: Record<string, string> = { DIGEST_RETRY_SLEEP: "0" },
 ) {
@@ -26,16 +33,17 @@ function run(
   writeFileSync(calls, "");
   writeFileSync(
     path.join(dir, "plan"),
-    plan.map((p) => `${p.code} ${p.sent ? 1 : 0}\n`).join(""),
+    plan.map((p) => `${p.code} ${p.sent ? 1 : 0} ${p.hang ? 1 : 0}\n`).join(""),
   );
   writeFileSync(
     path.join(dir, "npx"),
     `#!/bin/bash
 echo "NODE_ENV=$NODE_ENV cwd=$PWD args=$*" >> "${calls}"
 n=$(wc -l < "${calls}" | tr -d ' ')
-read -r code sent < <(sed -n "\${n}p" "${path.join(dir, "plan")}")
+read -r code sent hang < <(sed -n "\${n}p" "${path.join(dir, "plan")}")
 [[ -n "$code" ]] || exit 99
 echo "stub npx attempt $n"
+if [[ "$hang" == 1 ]]; then sleep 30 & echo $! >> "${path.join(dir, "pids")}"; wait; fi
 [[ "$sent" == 1 ]] && echo "${SENT}"
 echo "stub error line" >&2
 exit "$code"
@@ -45,7 +53,7 @@ exit "$code"
   const childEnv = {
     ...process.env,
     ...env,
-    PATH: `${dir}:${process.env.PATH}`,
+    PATH: `${dir}:${env.PATH ?? process.env.PATH}`,
   };
 
   // The stub, not a real npx, must be what the script resolves.
@@ -62,7 +70,13 @@ exit "$code"
     encoding: "utf8",
   });
   const lines = readFileSync(calls, "utf8").split("\n").filter(Boolean);
-  return { ...result, lines, calls: lines.length };
+  const pids = existsSync(path.join(dir, "pids"))
+    ? readFileSync(path.join(dir, "pids"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map(Number)
+    : [];
+  return { ...result, lines, calls: lines.length, pids, dir };
 }
 
 describe("scripts/daily-digest.sh", () => {
@@ -114,6 +128,57 @@ describe("scripts/daily-digest.sh", () => {
 
     expect(r.calls).toBe(3);
     expect(r.status).toBe(3);
+  });
+
+  it("kills an attempt that hangs past DIGEST_ATTEMPT_TIMEOUT (whole process group) and retries it", () => {
+    const t = Date.now();
+    const r = run(
+      [
+        { code: 0, hang: true },
+        { code: 0, sent: true },
+      ],
+      ["me@example.com"],
+      { DIGEST_RETRY_SLEEP: "0", DIGEST_ATTEMPT_TIMEOUT: "1" },
+    );
+
+    expect(r.calls).toBe(2);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("timed out after 1s");
+    expect(Date.now() - t).toBeLessThan(15_000);
+    expect(r.pids).toHaveLength(1);
+    expect(() => process.kill(r.pids[0], 0)).toThrow(); // the hung child is gone
+  }, 20_000);
+
+  it("returns 124 when every attempt hangs", () => {
+    const r = run(
+      [
+        { code: 0, hang: true },
+        { code: 0, hang: true },
+        { code: 0, hang: true },
+      ],
+      ["me@example.com"],
+      { DIGEST_RETRY_SLEEP: "0", DIGEST_ATTEMPT_TIMEOUT: "1" },
+    );
+
+    expect(r.calls).toBe(3);
+    expect(r.status).toBe(124);
+  }, 20_000);
+
+  it("runs the attempt under caffeinate -i so an idle Mac does not sleep mid-run", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "digest-caff-"));
+    const log = path.join(dir, "caffeinate.log");
+    writeFileSync(
+      path.join(dir, "caffeinate"),
+      `#!/bin/bash\necho "$*" >> "${log}"\nexec "\${@:2}"\n`,
+    );
+    chmodSync(path.join(dir, "caffeinate"), 0o755);
+    const r = run([{ code: 0, sent: true }], ["me@example.com"], {
+      DIGEST_RETRY_SLEEP: "0",
+      PATH: `${dir}:${process.env.PATH}`,
+    });
+
+    expect(r.status).toBe(0);
+    expect(readFileSync(log, "utf8")).toMatch(/^-i npx tsx /);
   });
 
   it.each([
